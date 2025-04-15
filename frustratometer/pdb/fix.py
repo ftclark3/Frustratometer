@@ -13,7 +13,7 @@ def repair_pdb(pdb_file: str, chain: str, pdb_directory: Path= Path.cwd()) -> PD
     pdb_file: str,
         PDB file location.
     chain: str,
-        Chain ID
+        Chain ID -- can be formatted as str or list (or None)
     pdb_directory: str,
         PDB file location
 
@@ -51,5 +51,5 @@ def repair_pdb(pdb_file: str, chain: str, pdb_directory: Path= Path.cwd()) -> PD
         print("Unable to add missing atoms")
 
     fixer.addMissingHydrogens(7.0)
-    PDBFile.writeFile(fixer.topology, fixer.positions, open(f"{pdb_directory}/{pdbID}_cleaned.pdb", 'w'))
+    PDBFile.writeFile(fixer.topology, fixer.positions, open(f"{pdb_directory}/{pdbID}_cleaned.pdb", 'w'),keepIds=True)
     return fixer

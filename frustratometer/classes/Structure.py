@@ -77,7 +77,7 @@ class Structure:
         
         self.pdbID=pdb_file.stem
         self.pdb_file=pdb_file
-        self.chain=chain
+        self.chain=chain # will be None if no chain supplied
         self.distance_matrix_method=distance_matrix_method
         self.filtered_aligned_sequence=filtered_aligned_sequence
         self.aligned_sequence=aligned_sequence
@@ -88,18 +88,18 @@ class Structure:
             self.init_index_shift=0
 
             if repair_pdb:
-                fixer=pdb.repair_pdb(pdb_file, chain, pdb_directory)
+                fixer=pdb.repair_pdb(pdb_file, chain, pdb_directory) # for this function, chain can be str or list (or None)
                 self.pdb_file=str(pdb_directory/f"{self.pdbID}_cleaned.pdb")
 
             if ".pdb" in str(pdb_file) or repair_pdb==True:
-                self.structure = prody.parsePDB(str(self.pdb_file), chain=self.chain).select(f"protein")
+                self.structure = prody.parsePDB(str(self.pdb_file), chain=self.chain).select(f"protein") # for this function, chain should be a string containing the chain ids like "AB" or "A B"
             else:
-                self.structure=prody.parseMMCIF(str(self.pdb_file),chain=self.chain).select(f"protein")
+                self.structure=prody.parseMMCIF(str(self.pdb_file),chain=self.chain).select(f"protein")  # for this function, chain should be a string containing the chain ids like "AB" or "A B"
         else:
             assert len(self.seq_selection.replace("to"," to ").replace(":"," : ").split())>=4, "Please correctly input your residue selection"
             
             if self.chain==None:
-                raise ValueError("Please provide a chain name")
+                raise ValueError("self.chain==None. Please provide chain name(s)")
 
             self.init_index=int(self.seq_selection.replace("to"," to ").replace(":"," : ").split()[1].replace("`",""))
             self.fin_index=int(self.seq_selection.replace("to"," to ").replace(":"," : ").split()[3].replace("`",""))
@@ -116,7 +116,7 @@ class Structure:
 
             with open(pdb_file,"r") as f:
                 for line in f:
-                    if line.split()[0]=="ATOM" and line.split()[4+shift]==self.chain:
+                    if line.split()[0]=="ATOM" and (line.split()[4+shift] in self.chain):
                         try:
                             res_index=''.join(i for i in line.split()[5+index_shift] if i.isdigit())
                             next_res_index=''.join(i for i in next(f).split()[5+index_shift] if i.isdigit())
@@ -133,7 +133,7 @@ class Structure:
                 self.init_index_shift=self.init_index-self.pdb_init_index
                 self.fin_index_shift=self.fin_index-self.pdb_init_index+1
                 if repair_pdb:
-                    fixer=pdb.repair_pdb(pdb_file, chain, pdb_directory)
+                    fixer=pdb.repair_pdb(pdb_file, chain, pdb_directory) # for this function, chain can be str or list (or None)
                     self.pdb_file=f"{pdb_directory}/{self.pdbID}_cleaned.pdb"
                     self.select_gap_indices=[i for i in gap_indices if self.init_index<=i<=self.fin_index]
                     self.fin_index_shift-=len(self.select_gap_indices)
@@ -142,18 +142,18 @@ class Structure:
                 self.init_index_shift=self.init_index
                 self.fin_index_shift=self.fin_index+1
                 if repair_pdb:
-                    fixer=pdb.repair_pdb(pdb_file, chain, pdb_directory)
+                    fixer=pdb.repair_pdb(pdb_file, chain, pdb_directory) # for this function, chain can be str or list (or None)
                     self.pdb_file=f"{pdb_directory}/{self.pdbID}_cleaned.pdb"
-                    self.chain="A"
+                    # self.chain="A" I don't know why we would want to change the chain ID here
 
             if ".pdb" in str(pdb_file) or repair_pdb==True:
                 self.structure = prody.parsePDB(str(self.pdb_file), chain=self.chain).select(f"protein and {self.seq_selection}")
             else:
                 self.structure=prody.parseMMCIF(str(self.pdb_file),chain=self.chain).select(f"protein and {self.seq_selection}")
 
-        self.sequence=pdb.get_sequence(self.pdb_file,self.chain)
-        self.distance_matrix=pdb.get_distance_matrix(pdb_file=self.pdb_file,chain=self.chain,
-                                                     method=self.distance_matrix_method)
+        self.sequence, self.start_mask = pdb.get_sequence(self.pdb_file,self.chain,return_start_mask=True) # this function can now accept chain as list or string
+        self.distance_matrix=pdb.get_distance_matrix(pdb_file=self.pdb_file,chain=self.chain, # for this function, chain should be a string containing the chain ids                                     
+                                                     method=self.distance_matrix_method)      # separated by a space, like "A B"
         self.full_pdb_distance_matrix=self.distance_matrix
 
         self.z_coordinates=self.structure.select('((name CB) or (resname GLY and name CA))').getCoords()
@@ -180,7 +180,7 @@ class Structure:
             else:
                 self.full_to_aligned_index_dict=dict(zip(range(self.init_index_shift,self.fin_index_shift+1), range(len(self.sequence))))
                 self.mapped_distance_matrix=self.distance_matrix
-
+       
     @classmethod
     def full_pdb(cls,pdb_file: Union[Path,str], chain: Union[str,None]=None, aligned_sequence: str = None, filtered_aligned_sequence: str = None,
                 distance_matrix_method:str = 'CB', pdb_directory: Path = Path.cwd(), repair_pdb:bool = True):

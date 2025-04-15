@@ -57,6 +57,7 @@ class AWSEM(Frustratometer):
                  pdb_structure: object,
                  sequence: str =None,
                  expose_indicator_functions: bool=False,
+                 stats_by_chain: bool=False,
                  **parameters)->object:
         """
         Generate AWSEM object
@@ -69,6 +70,10 @@ class AWSEM(Frustratometer):
             The amino acid sequence of the protein. The sequence is assumed to be in one-letter code. 
         expose_indicator_functions: bool
             If set to True, indicator functions of the contact and burial energy terms can be accessed by user.
+        stats_by_chain: bool
+            If set to True, aa_freq, distance distributions, and local density distributions will be
+            calculated separately for each chain, potentially resulting in a different misfolded mean and variance
+            for each chains
         
         Returns
         -------
@@ -109,7 +114,14 @@ class AWSEM(Frustratometer):
         else:
             self.sequence=sequence
         self.structure=pdb_structure.structure
-        self.chain=pdb_structure.chain
+        self.chain=pdb_structure.chain # unless we further edit the Structure class, this will be a string like "AB" or "A B"
+        if type(self.chain) == str: # going forward, it's easiest if we convert this string into a list like ["A","B"]
+            self.chain = [id for id in self.chain if id != " "]  
+        self.stats_by_chain = stats_by_chain
+        if self.stats_by_chain and self.burial_in_context:
+            raise NotImplementedError("burial in context not yet supported for chainwise mean and variance calculations")                             
+        self.start_mask = pdb_structure.start_mask # list equal to the length of the protein where each index that is the same
+                                                   # as a chain start index is 1, and all other indices are 0
         self.pdb_file=pdb_structure.pdb_file
         self.init_index_shift=pdb_structure.init_index_shift
         self.distance_matrix=pdb_structure.distance_matrix
@@ -119,7 +131,7 @@ class AWSEM(Frustratometer):
         resid = selection_CB.getResindices()
         self.resid=resid
         self.N=len(self.resid)
-        assert self.N == len(self.sequence), "The pdb is incomplete. Try setting 'repair_pdb=True' when constructing the Structure object."
+        assert self.N == len(self.sequence), f"N: {self.N}, resids: {self.resid}\nlen(self.sequence):{len(self.sequence)},{self.sequence}\nThe pdb is incomplete. Try setting 'repair_pdb=True' when constructing the Structure object.\n{selection_CB.getResnames()}"
 
         if self.burial_in_context==True:
             selected_matrix=self.full_pdb_distance_matrix
@@ -127,10 +139,12 @@ class AWSEM(Frustratometer):
             selected_matrix=self.distance_matrix
         sequence_mask_rho = frustration.compute_mask(selected_matrix, 
                                                      maximum_contact_distance=None, 
-                                                     minimum_sequence_separation = p.min_sequence_separation_rho)
+                                                     minimum_sequence_separation = p.min_sequence_separation_rho,
+                                                     start_mask = self.start_mask)
         sequence_mask_contact = frustration.compute_mask(self.distance_matrix, 
                                                      maximum_contact_distance=p.distance_cutoff_contact, 
-                                                     minimum_sequence_separation = p.min_sequence_separation_contact)
+                                                     minimum_sequence_separation = p.min_sequence_separation_contact,
+                                                     start_mask = self.start_mask)
         
         self._decoy_fluctuation = {}
         self.minimally_frustrated_threshold=.78
@@ -237,8 +251,25 @@ class AWSEM(Frustratometer):
         self.contact_energy = contact_energy
 
         # Compute fast properties
-        self.aa_freq = frustration.compute_aa_freq(self.sequence)
-        self.contact_freq = frustration.compute_contact_freq(self.sequence)
+        if self.stats_by_chain:
+            self.aa_freq, self.aa_freq_by_chain = frustration.compute_aa_freq(self.sequence,
+                                                                              segment_aa_freq=self.stats_by_chain,start_mask=self.start_mask)
+            self.contact_freq, self.contact_freq_by_chain = frustration.compute_contact_freq(self.sequence,
+                                                                              segment_aa_freq=self.stats_by_chain,start_mask=self.start_mask)
+            #print(self.aa_freq_by_chain)
+            #print(self.contact_freq_by_chain)
+            #print(self.sequence)
+            #print(len(self.sequence))
+            #print(self.start_mask)
+            #exit()
+        else:
+            self.aa_freq = frustration.compute_aa_freq(self.sequence,
+                            segment_aa_freq=self.stats_by_chain,start_mask=self.start_mask)
+            self.contact_freq = frustration.compute_contact_freq(self.sequence,
+                                segment_aa_freq=self.stats_by_chain,start_mask=self.start_mask)
+            self.aa_freq_by_chain = None
+            self.contact_freq_by_chain = None
+
         self.potts_model = {}
         self.potts_model['h'] = burial_energy.sum(axis=-1)[:, self.aa_map_awsem_list]
         self.potts_model['J'] = contact_energy.sum(axis=0)[:, :, self.aa_map_awsem_x, self.aa_map_awsem_y]
@@ -253,64 +284,162 @@ class AWSEM(Frustratometer):
         # ['A', 'R', 'N', 'D', 'C', 'Q', 'E', 'G', 'H', 'I', 'L', 'K', 'M', 'F', 'P', 'S', 'T', 'W', 'Y', 'V']
         _AA='ARNDCQEGHILKMFPSTWYV'
         if aa_freq is None:
-            seq_index = np.array([_AA.find(aa) for aa in self.sequence])
-            N=self.N
+            if self.stats_by_chain:
+                N = self.N * 10 # see note below
+                aa_freq = np.array(self.aa_freq_by_chain)
+                probabilities = [aa_freq[i,:] / np.sum(aa_freq[i,:]) for i in range(aa_freq.shape[0])]
+                #print(probabilities)
+                seq_index = [np.random.choice(a=aa_freq.shape[1], size=N, p=probabilities[i]) for i in range(aa_freq.shape[0])]
+                # note there is no need to break seq_index into segments with sizes proportional to the length of the chain
+                # in other words, it is fine if seq_index is "too big"
+                # segment splitting aside, we have actually already made N "too big" by setting N=self.N*10 (see note below)
+                #raise ValueError("Segment-wise statistics calculation requested but no start_mask was given")
+            else: # assume we don't want to do different statistics for different subsegments
+                seq_index = [np.array([_AA.find(aa) for aa in self.sequence])] # replace with seq_index = np.array(self.aa_freq)?
+                N=self.N
         else:
-            N=self.N*10
-            total = sum(aa_freq)
-            probabilities = [freq / total for freq in aa_freq.ravel()]
-            seq_index = np.random.choice(a=len(aa_freq), size=N, p=probabilities)
+            N=self.N*10 # i think we multiply by 10 because we're concerned about seq_index possibly being a bad 
+                        # representation of the sequence by bad luck with our np.random.choice 
+                        # but if this is an issue, why not just call np.random.choice with size=1 on the probabilities
+                        # each time we a random identity? I guess it is kind of slow
+            aa_freq = np.array(aa_freq) # axis 0: each subsegment (if requested, otherwise length is 1)
+                                        # axis 1: amino acid type
+            probabilities = [aa_freq[i,:] / np.sum(aa_freq[i,:]) for i in range(aa_freq.shape[0])]
+            seq_index = [np.random.choice(a=aa_freq.shape[1], size=N, p=probabilities[i]) for i in range(aa_freq.shape[0])] # see note above on splitting N
         
-        distances = np.triu(self.distance_matrix)
-        distances = distances[(distances<self.distance_cutoff_contact) & (distances>0)]
-
         rho_b = np.expand_dims(self.rho_r, 1) #(n,1)
         rho1 = np.expand_dims(self.rho_r, 0) #(1,n)
         rho2 = np.expand_dims(self.rho_r, 1) #(n,1)
-
         sigma_water = 0.25 * (1 - np.tanh(self.eta_sigma * (rho1 - self.rho_0))) * (1 - np.tanh(self.eta_sigma * (rho2 - self.rho_0))) #(n,n)
-        sigma_protein = 1 - sigma_water #(n,n)
+        #sigma_protein = 1 - sigma_water #(n,n) we'll calculated this later
+        charges = np.array([0, 1, 0, -1, 0, 0, -1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0]) # for electrostatics
+        distances = np.triu(self.distance_matrix)
 
-        #Calculate theta and indicators
-        theta = 0.25 * (1 + np.tanh(self.eta * (distances - self.r_min))) * (1 + np.tanh(self.eta * (self.r_max - distances))) # (c,)
-        thetaII = 0.25 * (1 + np.tanh(self.eta * (distances - self.r_minII))) * (1 + np.tanh(self.eta * (self.r_maxII - distances))) #(c,)
-        burial_indicator = np.tanh(self.burial_kappa * (rho_b - self.burial_ro_min)) + np.tanh(self.burial_kappa * (self.burial_ro_max - rho_b)) #(n,3)
-           
-        charges = np.array([0, 1, 0, -1, 0, 0, -1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0])
-        electrostatics_indicator = np.exp(-distances / self.electrostatics_screening_length) / distances
+        if self.stats_by_chain:
+            # order by segment
+            # the goal is for this function to work for segmented and unsegmented aa_freq/distance/rho distributions
+            # (an unsegmented one is equivalent to a segmented one of length N)
+            distances, sigma_water, sigma_protein, burial_indicator = self.chain_split(distances, sigma_water,rho_b)
+            #Calculate other indicators, broken down by segment
+            theta = [] # (num_segments,num_distances)    note num_distances is probably much greater than number of residues in the segment
+            thetaII = [] # (num_segments,num_distances)  note num_distances is probably much greater than number of residues in the segment
+            electrostatics_indicator = [] # (num_segments,num_distances) note num_distances is probably much greater than number of residues in the segment
+            for counter in range(len(distances)):
+                theta.append(0.25 * (1 + np.tanh(self.eta * (distances[counter] - self.r_min))) * (1 + np.tanh(self.eta * (self.r_max - distances[counter])))) 
+                thetaII.append(0.25 * (1 + np.tanh(self.eta * (distances[counter] - self.r_minII))) * (1 + np.tanh(self.eta * (self.r_maxII - distances[counter])))) 
+                electrostatics_indicator.append(np.exp(-distances[counter] / self.electrostatics_screening_length) / distances[counter])
+        else:
+            # compute indicator functions and enclose everything in a list so that we can use the same syntax
+            # for segmented and unsegmented (meaning one segment for the entire system) systems
+            distances = [distances[(distances<self.distance_cutoff_contact) & (distances>0)]]
+            sigma_protein = 1 - sigma_water
+            sigma_water = [sigma_water]
+            sigma_protein = [sigma_protein]
+            burial_indicator = [np.tanh(self.burial_kappa * (rho_b - self.burial_ro_min)) + np.tanh(self.burial_kappa * (self.burial_ro_max - rho_b))]
+            theta = [0.25 * (1 + np.tanh(self.eta * (distances[0] - self.r_min))) * (1 + np.tanh(self.eta * (self.r_max - distances[0])))]
+            thetaII = [0.25 * (1 + np.tanh(self.eta * (distances[0] - self.r_minII))) * (1 + np.tanh(self.eta * (self.r_maxII - distances[0])))]
+            electrostatics_indicator = [np.exp(-distances[0] / self.electrostatics_screening_length) / distances[0]]
 
-        decoy_energies=np.zeros(n_decoys)
-        #decoy_data=[None]*n_decoys
-        #decoy_data_columns=['decoy_i','rand_i_resno','rand_j_resno','ires_type','jres_type','i_resno','j_resno','rij','rho_i','rho_j','water_energy','burial_energy_i','burial_energy_j','electrostatic_energy','tert_frust_decoy_energies']
-        for i in range(n_decoys):
-            c=np.random.randint(0,len(distances))
-            n1=np.random.randint(0,self.N)
-            n2=np.random.randint(0,self.N)
-            qi1=np.random.randint(0,N)
-            qi2=np.random.randint(0,N)
-            q1=seq_index[qi1]
-            q2=seq_index[qi2]
+        decoy_energies=np.zeros((self.N,n_decoys)) # shape is (num_residues, num_decoys_per_segment)
+        seg_start_res_idx = 0 # track start index of the current residue
+        for segment_index in range(len(distances)):
+            segment_distances = distances[segment_index]
+            segment_theta = theta[segment_index]
+            segment_thetaII = thetaII[segment_index]
+            segment_burial_indicator = burial_indicator[segment_index]
+            segment_sigma_water = sigma_water[segment_index]
+            segment_sigma_protein = sigma_protein[segment_index]
+            segment_electrostatics_indicator = electrostatics_indicator[segment_index]
+            #print(f"printing: segment_electrostatics")
+            #print(segment_electrostatics_indicator)
+            #print(f"printing: segment distances")
+            #print(segment_distances)
+            assert segment_burial_indicator.shape[1] == 3, segment_burial_indicator.shape
+            assert len(segment_distances.shape) # the selection operation applying the sequence separation and distance criteria should flatten it
+            segment_N_small = segment_burial_indicator.shape[0]
+            segment_N_big = N/self.N*segment_N_small # N/self.N tells us whether the factor we need to multiply segment_N_small by is 10 or 1
+                                                     # (depending on whether aa_freq was passed to the function or not--see above)
+            try:
+                segment_seq_index = seq_index[segment_index]
+            except IndexError:
+                print(distances)
+                raise
 
-            
-            burial_energy1 = (-0.5 * self.k_contact * self.burial_gamma[q1] * burial_indicator[n1]).sum(axis=0)
-            burial_energy2 = (-0.5 * self.k_contact * self.burial_gamma[q2] * burial_indicator[n2]).sum(axis=0)
-            
-            direct = theta[c] * self.direct_gamma[q1, q2]
-            water_mediated = sigma_water[n1,n2] * thetaII[c] * self.water_gamma[q1,q2]
-            protein_mediated = sigma_protein[n1,n2] * thetaII[c] * self.protein_gamma[q1,q2]
-            contact_energy = -self.k_contact * (direct+water_mediated+protein_mediated)
-            electrostatics_energy = self.k_electrostatics * electrostatics_indicator[c]*charges[q1]*charges[q2]
+            for i in range(n_decoys): # we do the same number for each chain, so be careful. this could make the computation very long
+                c=np.random.randint(0,segment_distances.shape[0]) # pick a random residue's distance
+                n1=np.random.randint(0,segment_N_small) # pick a random residue's local density 
+                n2=np.random.randint(0,segment_N_small) # pick another random residue's local density
+                qi1=np.random.randint(0,segment_N_big) # pick a random residue 
+                qi2=np.random.randint(0,segment_N_big) # pick another random residue
+                try:
+                    q1=segment_seq_index[qi1] # pick the identity of the random residue
+                except IndexError:
+                    print(distances)
+                    print(seq_index)
+                    print(segment_seq_index)
+                    print(qi1)
+                    print(seq_index)
+                    print(len(seq_index))
+                    raise
+                q2=segment_seq_index[qi2] # pick the identity of the other random residue
+                
+                burial_energy1 = (-0.5 * self.k_contact * self.burial_gamma[q1] * segment_burial_indicator[n1]).sum(axis=0)
+                burial_energy2 = (-0.5 * self.k_contact * self.burial_gamma[q2] * segment_burial_indicator[n2]).sum(axis=0)
+                
+                direct = segment_theta[c] * self.direct_gamma[q1, q2] # direct interaction for random distance and amino acid pair
+                water_mediated = segment_sigma_water[n1,n2] * segment_thetaII[c] * self.water_gamma[q1,q2] # water-mediated interaction for the same random pair and distance,
+                                                                                                           # and also random local densities
+                protein_mediated = segment_sigma_protein[n1,n2] * segment_thetaII[c] * self.protein_gamma[q1,q2] # same for protein-mediated
+                contact_energy = -self.k_contact * (direct+water_mediated+protein_mediated)
+                electrostatics_energy = self.k_electrostatics * segment_electrostatics_indicator[c]*charges[q1]*charges[q2] # same amino acid types and distance for electrostatics
 
-            decoy_energies[i]=(burial_energy1+burial_energy2+contact_energy+electrostatics_energy)
-            #decoy_data[i]=[i, qi1, qi2, q1, q2, n1, n2, distances[c], self.rho_r[n1], self.rho_r[n2], contact_energy/4.184, burial_energy1/4.184, burial_energy2/4.184, electrostatics_energy/4.184, decoy_energies[i]]
-            
-        mean_decoy_energy = np.mean(decoy_energies)
-        std_decoy_energy = np.std(decoy_energies)
+                #decoy_energies[segment_index,i]=(burial_energy1+burial_energy2+contact_energy+electrostatics_energy)
+                # every residue position in the current segment should get the same pair energy for this decoy
+                decoy_energies[seg_start_res_idx:seg_start_res_idx+segment_N_small,i]=(burial_energy1+burial_energy2+contact_energy+electrostatics_energy)
+        
+            # increment our start residue index before proceeding to next segment
+            seg_start_res_idx += segment_N_small
+        #import pdb; pdb.set_trace()
+        mean_decoy_energy = np.mean(decoy_energies, axis=1) # average over all decoys for each residue
+        std_decoy_energy = np.std(decoy_energies,axis=1) # standard deviation of over all decoys for each residue
         return mean_decoy_energy, std_decoy_energy
     
+    def chain_split(self, distances, sigma_water, rho_b):
+        # break distances into a list for each segment
+        distances_by_segment = []
+        sigma_water_by_segment = []
+        sigma_protein_by_segment = []
+        burial_indicator = []
+        segment_start_indices = np.where(np.array(self.start_mask)==1)[0] # np.where returns a numpy array wrapped in a tuple, so we have to unwrap
+        for counter in range(len(segment_start_indices)):
+            ij_start = segment_start_indices[counter]
+            if counter != len(segment_start_indices)-1:
+                ij_end = segment_start_indices[counter+1]
+            else: # if we're on the last segment, the end index is just N, the number of residues in our system
+                ij_end = len(self.start_mask)
+            segment_block = distances[ij_start:ij_end,ij_start:ij_end] # taking block around diagonal, which represents interactions
+                                                                       # within each subsegment
+            distances_by_segment.append(segment_block[(segment_block<self.distance_cutoff_contact) & (segment_block>0)])
+            # break sigma_water and sigma_protein into a list for each segment
+            sigma_water_by_segment.append(sigma_water[ij_start:ij_end,ij_start:ij_end])
+            sigma_protein_by_segment.append(1-sigma_water[ij_start:ij_end,ij_start:ij_end])
+            burial_indicator.append(np.tanh(self.burial_kappa * (rho_b[ij_start:ij_end,:] - self.burial_ro_min)) + np.tanh(self.burial_kappa * (self.burial_ro_max - rho_b[ij_start:ij_end,:])))
+        ## break sigma_water and sigma_protein into a list for each segment
+        #sigma_water_by_segment = []
+        #sigma_protein_by_segment = []
+        #for counter in range(len(segment_start_indices)-1):
+        #    ij_start = segment_start_indices[counter]
+        #    ij_end = segment_start_indices[counter+1]
+        #    segment_block = sigma_water[ij_start:ij_end,ij_start:ij_end] # taking block around diagonal, which represents interactions
+        #                                                                 # within each subsegment
+        #    sigma_water_by_segment.append(segment_block)
+        #    sigma_protein_by_segment.append(1-segment_block)
+        return distances_by_segment, sigma_water_by_segment, sigma_protein_by_segment, burial_indicator
+
+
     def compute_configurational_energies(self):
         _AA='ARNDCQEGHILKMFPSTWYV'
-        seq_index = np.array([_AA.find(aa) for aa in self.sequence])
+        seq_index = np.array([_AA.find(aa) for aa in self.sequence]) # this is fine for a multi chain system if sequence and structure are both fixed
         distances = np.triu(self.distance_matrix)
         distances = distances[(distances<self.distance_cutoff_contact) & (distances>0)]
         n_contacts=len(distances)
@@ -366,4 +495,18 @@ class AWSEM(Frustratometer):
     
     def configurational_frustration(self,aa_freq=None, correction=0, n_decoys=4000):
         mean_decoy_energy, std_decoy_energy = self.compute_configurational_decoy_statistics(n_decoys=n_decoys,aa_freq=aa_freq)
-        return -(self.compute_configurational_energies()-mean_decoy_energy)/(std_decoy_energy+correction)
+        assert len(mean_decoy_energy.shape)==1, mean_decoy_energy
+        assert len(std_decoy_energy.shape)==1, std_decoy_energy
+        assert mean_decoy_energy.shape == std_decoy_energy.shape, (mean_decoy_energy.shape,std_decoy_energy.shape)
+        corrected_mean = np.zeros((mean_decoy_energy.shape[0],mean_decoy_energy.shape[0]))
+        corrected_std = np.zeros((mean_decoy_energy.shape[0],mean_decoy_energy.shape[0]))
+        for i in range(mean_decoy_energy.shape[0]):
+            for j in range(mean_decoy_energy.shape[0]):
+                #print(mean_decoy_energy[i])
+                #print(mean_decoy_energy[j])
+                corrected_mean[i,j] = (mean_decoy_energy[i]+mean_decoy_energy[j])/2
+                #corrected_std[i,j] = np.linalg.norm([std_decoy_energy[i],std_decoy_energy[j]])/np.sqrt(2)
+                corrected_std[i,j] = (std_decoy_energy[i]+std_decoy_energy[j])/2
+        return -(self.compute_configurational_energies()-corrected_mean)/(corrected_std+correction) 
+        # for multiple segments, should make this mean and variance a function of the means and variances of the segments of the pair
+        # so we would take the mean of means and sum of varances (assuming they're independent)

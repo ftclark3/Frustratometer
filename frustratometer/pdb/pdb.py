@@ -37,7 +37,8 @@ def download(pdbID: str,directory: Union[Path,str]=Path.cwd()) -> Path:
     return pdb_file
 
 def get_sequence(pdb_file: str, 
-                 chain: str
+                 chain: str,
+                 return_start_mask: bool=False
                  ) -> str:
     """
     Get a protein sequence from a pdb file
@@ -46,8 +47,10 @@ def get_sequence(pdb_file: str,
     ----------
     pdb_file : str,
         PDB file location.
-    chain: str,
-        Chain ID of the selected protein.
+    chain: str or list,
+        Chain ID(s) of the selected protein.
+    return_start_mask: bool,
+        Return binary mask list indicating whether each position is the start of a chain
 
     Returns
     -------
@@ -58,7 +61,7 @@ def get_sequence(pdb_file: str,
     Get a protein sequence from a PDB file
     
     :param pdb: PDB file location
-    :param chain: chain name of PDB file to get sequence
+    :param chain: chain name(s) of PDB file to get sequence
     :return: protein sequence
     """
 
@@ -66,23 +69,47 @@ def get_sequence(pdb_file: str,
         parser = MMCIFParser()
     else:
         parser = PDBParser()
-    structure = parser.get_structure('name', pdb_file)
+    structure = parser.get_structure('name', pdb_file) 
+    #structure = prody.parsePDB(str(pdb_file))
+    #hv = structure.getHierView()
     if chain==None:
         all_chains=[i.get_id() for i in structure.get_chains()]
+        #all_chains = [structure_chain.getChid() for structure_chain in hv]
     else:
-        all_chains=[chain]
+        if type(chain) == list:
+            all_chains = chain
+        elif type(chain) == str:
+            #all_chains = [id for id in chain if id != " "] # remove spaces if present in string
+            all_chains=[chain]
+        else:
+            raise TypeError(f"chain must be list or str but was {type(chain)}")
     sequence = ""
-    for chain in all_chains:
-        c = structure[0][chain]
+    start_mask = []
+    for single_chain in all_chains:
+        c = structure[0][single_chain]
+        #c = hv[single_chain]
         chain_seq = ""
         for residue in c:
             is_regular_res = residue.has_id('CA') and residue.has_id('O')
+            #atom_names = [atom.getName() for atom in residue]
+            #is_regular_res = ("CA" in atom_names and "O" in atom_names)
             res_id = residue.get_id()[0]
             if (res_id==' ' or res_id=='H_MSE' or res_id=='H_M3L' or res_id=='H_CAS') and is_regular_res:
+            # i don't know what H_HSE, H_M3L, and H_CAS are doing 
+            # because they aren't in three_to_one, so those should thrown an error
+            # long story short, I don't think we have to worry about them 
+            #if is_regular_res:
                 residue_name = residue.get_resname()
+                #residue_name = residue.getResname()
                 chain_seq += three_to_one[residue_name]
         sequence += chain_seq
-    return sequence
+        start_mask.append(1)
+        for _ in range(1,len(chain_seq)):
+            start_mask.append(0)
+    if return_start_mask:
+        return (sequence,start_mask)
+    else:
+        return sequence
 
 
 
