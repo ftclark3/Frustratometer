@@ -137,7 +137,7 @@ class Structure:
                     self.pdb_file=f"{pdb_directory}/{self.pdbID}_cleaned.pdb"
                     self.select_gap_indices=[i for i in gap_indices if self.init_index<=i<=self.fin_index]
                     self.fin_index_shift-=len(self.select_gap_indices)
-                    self.seq_selection=f"resnum `{self.init_index_shift+1}to{self.fin_index_shift}`"
+                    #self.seq_selection=f"resnum `{self.init_index_shift+1}to{self.fin_index_shift}`" # WE'RE KEEPING IDs NOW SO DON'T WANT TO DO THIS!!!!
             elif "resindex" in self.seq_selection:
                 self.init_index_shift=self.init_index
                 self.fin_index_shift=self.fin_index+1
