@@ -56,9 +56,9 @@ def compute_mask(distance_matrix: np.array,
         sequence_distance = sdist.squareform(sdist.pdist(np.arange(seq_len)[:, np.newaxis]))
         mask *= sequence_distance >= minimum_sequence_separation
         if start_mask: # adjust mask to allow interactions between close in sequence residues that are part of different chains
-            for i in range(1,mask.shape[0]):
-                for j in range(1,mask.shape[1]):
-                    if sum(start_mask[:i])!=sum(start_mask[:j]) and abs(i-j)<minimum_sequence_separation:
+            for i in range(0,mask.shape[0]):
+                for j in range(0,mask.shape[1]):
+                    if sum(start_mask[:i+1])!=sum(start_mask[:j+1]) and abs(i-j)<minimum_sequence_separation:
                         assert mask[i,j]==0
                         mask[i,j]=1
     if maximum_contact_distance is not None:

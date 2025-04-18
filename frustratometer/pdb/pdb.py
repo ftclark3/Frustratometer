@@ -148,7 +148,7 @@ def get_distance_matrix(pdb_file: Union[Path,str],
     if method == 'CA':
         coords = structure.select('protein and name CA' + chain_selection).getCoords()
     elif method == 'CB':
-        coords = structure.select('(protein and (name CB) or (resname GLY and name CA))' + chain_selection).getCoords()
+        coords = structure.select('(protein and (name CB) or (resname GLY IGL and name CA))' + chain_selection).getCoords()
     elif method == 'minimum':
         selection = structure.select('protein' + chain_selection)
         coords = selection.getCoords()
