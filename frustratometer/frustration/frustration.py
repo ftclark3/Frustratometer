@@ -623,7 +623,7 @@ def compute_decoy_energy(seq: str, potts_model: dict, mask: np.array, kind='sing
         decoy_energy=native_energy + compute_contact_decoy_energy_fluctuation(seq, potts_model, mask)
     return decoy_energy
 
-def compute_aa_freq(seq, include_gaps=True, segment_aa_freq=False, start_mask=None):
+def compute_aa_freq(seq, include_gaps=True, segment_aa_freq=False, start_mask=None, new_AA=None):
     """
     Calculates amino acid frequencies in given sequence
 
@@ -645,6 +645,8 @@ def compute_aa_freq(seq, include_gaps=True, segment_aa_freq=False, start_mask=No
         protein structure is the first amino acid in a chain (1 for True, 0 for False).
         This is needed to confine each aa_freq calculation to each subsegment of the entire system
         (for example, each chain)
+    new_AA: str 
+        alternative order for amino acid identities used in _AA. Gap must be place in first position
 
     Returns
     -------
@@ -652,37 +654,63 @@ def compute_aa_freq(seq, include_gaps=True, segment_aa_freq=False, start_mask=No
         Array of frequencies of all 21 possible amino acids within sequence
     """
 
+    if new_AA and new_AA[0] != "-":
+        raise ValueError("First position in new_AA must be a gap, '-' !")
+
     # compute aa_freq without regard to chain or segment
     seq_index = np.array([_AA.find(aa) for aa in seq])
     aa_freq = np.array([(seq_index == i).sum() for i in range(21)])
     if not include_gaps:
-        aa_freq[0] = 0
+        aa_freq[0] = 0 # set frequency of gap to 0
+    if new_AA: # adjust to new amino acid identity order
+        aa_freq = [aa_freq[_AA.index(aa)] for aa in new_AA]
 
     if segment_aa_freq:
         if not start_mask:
             raise ValueError("Segment-wise aa_freq calculation requested but no start_mask was given")
+        aa_freq_by_chain = []
         seq_index = [] 
         subseq = []
         for bit,aa in zip(start_mask,seq):
+            """
             if bit==1:
                 seq_index.append(subseq)
                 subseq = []
             else:
+                if new_AA:
+                    subseq.append(new_AA.find(aa))
+                else:
+                    subseq.append(_AA.find(aa)) 
+            """
+            if bit==1:
+                seq_index.append(subseq)
+                aa_freq_by_chain.append([(np.array(subseq)==aa_number).sum() for aa_number in range(21)]) 
+                subseq = []
+            if new_AA:
+                subseq.append(new_AA.find(aa))
+            else:
                 subseq.append(_AA.find(aa))
         seq_index.append(subseq) # add the last one
-        seq_index = seq_index[1:] # get rid of emtpy list at the beginning
-        seq_index = np.array(seq_index)
-        aa_freq_by_chain = np.array([[(seq_index == i).sum() for i in range(21)] for _ in range(sum(start_mask))])
+        aa_freq_by_chain.append([(np.array(subseq)==aa_number).sum() for aa_number in range(21)])     
+        seq_index = seq_index[1:] # get rid of empty list at the beginning
+        aa_freq_by_chain = aa_freq_by_chain[1:] # get rid of empty list at the beginning
+        ##########################################################################################################
+        #seq_index = np.array(seq_index)
+        #aa_freq_by_chain = np.array([[(seq_index == i).sum() for i in range(21)] for _ in range(sum(start_mask))])
+        #if not include_gaps:
+        #    assert aa_freq_by_chain.shape[1]==1, aa_freq_by_chain.shape
+        #    for counter in range(aa_freq_by_chain.shape[0]): # axis 0 corresponds to subsegments
+        ###########################################################################################################
         if not include_gaps:
-            assert aa_freq_by_chain.shape[1]==1, aa_freq_by_chain.shape
-            for counter in range(aa_freq_by_chain.shape[0]): # axis 0 corresponds to subsegments
-                aa_freq_by_chain[counter,0] = 0
+            for counter,chain_aa_freq in enumerate(aa_freq_by_chain):
+                #aa_freq_by_chain[counter,0] = 0 # set frequency of gap to 0
+                aa_freq_by_chain[counter][0] = 0 # set frequency of gap to 0
         return (aa_freq, aa_freq_by_chain)
     else:
         return aa_freq
 
 
-def compute_contact_freq(seq, segment_aa_freq=False, start_mask=None):
+def compute_contact_freq(seq, segment_aa_freq=False, start_mask=None, new_AA=None):
     """
     Calculates contact frequencies in given sequence
 
@@ -695,6 +723,8 @@ def compute_contact_freq(seq, segment_aa_freq=False, start_mask=None):
         protein structure is the first amino acid in a chain (1 for True, 0 for False).
         This is needed to confine each aa_freq calculation to each chain (important for
         heterogeneous systems)
+    new_AA: str
+        See definition of compute_aa_freq
         
     Returns
     -------
@@ -702,17 +732,17 @@ def compute_contact_freq(seq, segment_aa_freq=False, start_mask=None):
         21x21 array of frequencies of all possible contacts within sequence.
     """
     if segment_aa_freq:
-        aa_freq, aa_freq_by_chain = compute_aa_freq(seq, segment_aa_freq=segment_aa_freq, start_mask=start_mask)
-        aa_freq = np.array(aa_freq, dtype=np.float64)
-        aa_freq /= aa_freq.sum()
-        contact_freq = (aa_freq[:, np.newaxis] * aa_freq[np.newaxis, :])
+        aa_freq, aa_freq_by_chain = compute_aa_freq(seq, segment_aa_freq=segment_aa_freq, start_mask=start_mask, new_AA=new_AA)
+        aa_freq = np.array(aa_freq, dtype=np.float64) # processing the overall (non-segmented) aa_freq/contact_freq the same as below (else block)
+        aa_freq /= aa_freq.sum() # processing the overall (non-segmented) aa_freq/contact_freq the same as below (else block)
+        contact_freq = (aa_freq[:, np.newaxis] * aa_freq[np.newaxis, :]) # processing the overall (non-segmented) aa_freq/contact_freq the same as below (else block)
         aa_freq_by_chain = np.array(aa_freq_by_chain, dtype=np.float64)
-        aa_freq_by_chain /= aa_freq_by_chain.sum()
+        aa_freq_by_chain /= aa_freq_by_chain.sum(axis=1)[:,np.newaxis] # divide shape (NUM_CHAINS, 21) by (NUM_CHAINS, 1) (the 1 is broadcasted along each row)
+        #import pdb; pdb.set_trace()                                    # so the resulting shape is (NUM_CHAINS, 21)
         contact_freq_by_chain = (aa_freq_by_chain[:, np.newaxis] * aa_freq_by_chain[np.newaxis, :])
         return (contact_freq, contact_freq_by_chain)
     else:
-        aa_freq = compute_aa_freq(seq, segment_aa_freq=segment_aa_freq, start_mask=start_mask)
-        #print(aa_freq)
+        aa_freq = compute_aa_freq(seq, segment_aa_freq=segment_aa_freq, start_mask=start_mask, new_AA=new_AA)
         aa_freq = np.array(aa_freq, dtype=np.float64)
         aa_freq /= aa_freq.sum()
         contact_freq = (aa_freq[:, np.newaxis] * aa_freq[np.newaxis, :])

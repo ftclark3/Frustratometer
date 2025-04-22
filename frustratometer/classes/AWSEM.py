@@ -252,10 +252,18 @@ class AWSEM(Frustratometer):
 
         # Compute fast properties
         if self.stats_by_chain:
-            self.aa_freq, self.aa_freq_by_chain = frustration.compute_aa_freq(self.sequence,
-                                                                              segment_aa_freq=self.stats_by_chain,start_mask=self.start_mask)
-            self.contact_freq, self.contact_freq_by_chain = frustration.compute_contact_freq(self.sequence,
-                                                                              segment_aa_freq=self.stats_by_chain,start_mask=self.start_mask)
+            aa_freq, aa_freq_by_chain = frustration.compute_aa_freq(self.sequence,
+                                                    segment_aa_freq=self.stats_by_chain,start_mask=self.start_mask,new_AA="-ARNDCQEGHILKMFPSTWYV")
+            aa_freq = aa_freq[1:] # cut off gap frequency
+            aa_freq_by_chain = [chain_aa_freq[1:] for chain_aa_freq in aa_freq_by_chain] # cut off gap frequency
+            self.aa_freq = aa_freq
+            self.aa_freq_by_chain = aa_freq_by_chain
+            contact_freq, contact_freq_by_chain = frustration.compute_contact_freq(self.sequence,
+                                                    segment_aa_freq=self.stats_by_chain,start_mask=self.start_mask,new_AA="-ARNDCQEGHILKMFPSTWYV")
+            contact_freq = contact_freq[1:,1:] # cut off gap frequency
+            contact_freq_by_chain = [chain_contact_freq[1:,1:] for chain_contact_freq in contact_freq_by_chain] # cut off gap frequency
+            self.contact_freq = contact_freq
+            self.contact_freq_by_chain = contact_freq_by_chain
             #print(self.aa_freq_by_chain)
             #print(self.contact_freq_by_chain)
             #print(self.sequence)
@@ -289,7 +297,12 @@ class AWSEM(Frustratometer):
                 aa_freq = np.array(self.aa_freq_by_chain)
                 probabilities = [aa_freq[i,:] / np.sum(aa_freq[i,:]) for i in range(aa_freq.shape[0])]
                 #print(probabilities)
-                seq_index = [np.random.choice(a=aa_freq.shape[1], size=N, p=probabilities[i]) for i in range(aa_freq.shape[0])]
+                try:
+                    seq_index = [np.random.choice(a=aa_freq.shape[1], size=N, p=probabilities[i]) for i in range(aa_freq.shape[0])]
+                except ValueError:
+                    print("stats_by_chain seq_index issue")
+                    #import pdb; pdb.set_trace()
+                    raise
                 # note there is no need to break seq_index into segments with sizes proportional to the length of the chain
                 # in other words, it is fine if seq_index is "too big"
                 # segment splitting aside, we have actually already made N "too big" by setting N=self.N*10 (see note below)
@@ -366,7 +379,10 @@ class AWSEM(Frustratometer):
                 raise
 
             for i in range(n_decoys): # we do the same number for each chain, so be careful. this could make the computation very long
-                c=np.random.randint(0,segment_distances.shape[0]) # pick a random residue's distance
+                try:
+                    c=np.random.randint(0,segment_distances.shape[0]) # pick a random residue's distance
+                except ValueError:
+                    import pdb; pdb.set_trace()
                 n1=np.random.randint(0,segment_N_small) # pick a random residue's local density 
                 n2=np.random.randint(0,segment_N_small) # pick another random residue's local density
                 qi1=np.random.randint(0,segment_N_big) # pick a random residue 
@@ -382,9 +398,13 @@ class AWSEM(Frustratometer):
                     print(len(seq_index))
                     raise
                 q2=segment_seq_index[qi2] # pick the identity of the other random residue
-                
-                burial_energy1 = (-0.5 * self.k_contact * self.burial_gamma[q1] * segment_burial_indicator[n1]).sum(axis=0)
-                burial_energy2 = (-0.5 * self.k_contact * self.burial_gamma[q2] * segment_burial_indicator[n2]).sum(axis=0)
+                try:
+                    burial_energy1 = (-0.5 * self.k_contact * self.burial_gamma[q1] * segment_burial_indicator[n1]).sum(axis=0)
+                    burial_energy2 = (-0.5 * self.k_contact * self.burial_gamma[q2] * segment_burial_indicator[n2]).sum(axis=0)
+                except IndexError as e:
+                    #import pdb; pdb.set_trace()
+                    print("indexing issue burial_energy1 burial_energy2")
+                    raise
                 
                 direct = segment_theta[c] * self.direct_gamma[q1, q2] # direct interaction for random distance and amino acid pair
                 water_mediated = segment_sigma_water[n1,n2] * segment_thetaII[c] * self.water_gamma[q1,q2] # water-mediated interaction for the same random pair and distance,
@@ -440,16 +460,22 @@ class AWSEM(Frustratometer):
     def compute_configurational_energies(self):
         _AA='ARNDCQEGHILKMFPSTWYV'
         seq_index = np.array([_AA.find(aa) for aa in self.sequence]) # this is fine for a multi chain system if sequence and structure are both fixed
-        distances = np.triu(self.distance_matrix)
-        distances = distances[(distances<self.distance_cutoff_contact) & (distances>0)]
+        #distances = np.triu(self.distance_matrix)
+        distances_indices = np.triu_indices(self.distance_matrix.shape[0], k=2) # IMPORTANT CHANGE TO MAKE IT MORE LIKE THE TCL SCRIPT!!!
+        triu_mask = np.zeros(self.distance_matrix.shape,dtype=np.bool_)
+        triu_mask[distances_indices] = True
+        distances = self.distance_matrix * triu_mask
+        distances = distances[(distances<self.distance_cutoff_contact) & (distances>0) & (distances>3.5)] # IMPORTANT CHANGE TO MAKE IT MORE LIKE THE TCL SCRIPT!!!
         n_contacts=len(distances)
 
         n = self.distance_matrix.shape[0]  # Assuming self.distance_matrix is defined and square
-        tri_upper_indices = np.triu_indices(n, k=1)  # k=1 excludes the diagonal
-        valid_pairs = (self.distance_matrix[tri_upper_indices] < self.distance_cutoff_contact) & \
-                      (self.distance_matrix[tri_upper_indices] > 0)
+        #tri_upper_indices = np.triu_indices(n, k=1)  # k=1 excludes the diagonal
+        tri_upper_indices = np.triu_indices(n, k=2)  # k=1 excludes the diagonal #######################IMPORTANT CHANGE TO MAKE IT MORE LIKE THE TCL SCRIPT!!!
+        valid_pairs = (self.distance_matrix[tri_upper_indices] < self.distance_cutoff_contact) & (3.5 < self.distance_matrix[tri_upper_indices])\
+                      & (self.distance_matrix[tri_upper_indices] > 0) ######################3 IMPORTANT CHANGE TO MAKE IT MORE LIKE THE TCL SCRIPT!!!!!!!1
         indices1,indices2 = (tri_upper_indices[0][valid_pairs], tri_upper_indices[1][valid_pairs])
-
+        self.config_indices1 = indices1
+        self.config_indices2 = indices2
         # for n1,n2,c in zip(indices1,indices2,range(n_contacts)):
         #     assert self.distance_matrix[n1,n2] == distances[c]
         
@@ -509,4 +535,4 @@ class AWSEM(Frustratometer):
                 corrected_std[i,j] = (std_decoy_energy[i]+std_decoy_energy[j])/2
         return -(self.compute_configurational_energies()-corrected_mean)/(corrected_std+correction) 
         # for multiple segments, should make this mean and variance a function of the means and variances of the segments of the pair
-        # so we would take the mean of means and sum of varances (assuming they're independent)
+        # not sure exactly how that should be done

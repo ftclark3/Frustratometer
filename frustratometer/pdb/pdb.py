@@ -65,43 +65,45 @@ def get_sequence(pdb_file: str,
     :return: protein sequence
     """
 
-    if ".cif" in str(pdb_file):
-        parser = MMCIFParser()
-    else:
-        parser = PDBParser()
-    structure = parser.get_structure('name', pdb_file) 
-    #structure = prody.parsePDB(str(pdb_file))
-    #hv = structure.getHierView()
+    if ".cif" in str(pdb_file): # BIOPYTHON
+        parser = MMCIFParser() # BIOPYTHON
+    else:                     # BIOPYTHON
+        parser = PDBParser() # BIOPYTHON
+    structure = parser.get_structure('name', pdb_file) #BIOPYTHON
+    #structure = prody.parsePDB(str(pdb_file)) # PRODY
+    #hv = structure.getHierView() # PRODY
     if chain==None:
-        all_chains=[i.get_id() for i in structure.get_chains()]
-        #all_chains = [structure_chain.getChid() for structure_chain in hv]
+        all_chains=[i.get_id() for i in structure.get_chains()] # BIOPYTHON
+        #all_chains = [structure_chain.getChid() for structure_chain in hv] # PRODY
     else:
         if type(chain) == list:
             all_chains = chain
         elif type(chain) == str:
-            #all_chains = [id for id in chain if id != " "] # remove spaces if present in string
-            all_chains=[chain]
+            #all_chains = [id for id in chain if id != " "] # remove spaces if present in string # PRODY
+            all_chains=[chain] # BIOPYTHON
         else:
             raise TypeError(f"chain must be list or str but was {type(chain)}")
     sequence = ""
     start_mask = []
     for single_chain in all_chains:
-        c = structure[0][single_chain]
-        #c = hv[single_chain]
+        c = structure[0][single_chain] # BIOPYTHON
+        #c = hv[single_chain] # PRODY
         chain_seq = ""
         for residue in c:
-            is_regular_res = residue.has_id('CA') and residue.has_id('O')
-            #atom_names = [atom.getName() for atom in residue]
-            #is_regular_res = ("CA" in atom_names and "O" in atom_names)
-            res_id = residue.get_id()[0]
-            if (res_id==' ' or res_id=='H_MSE' or res_id=='H_M3L' or res_id=='H_CAS') and is_regular_res:
+            is_regular_res = residue.has_id('CA') and residue.has_id('O') # BIOPYTHON
+            #atom_names = [atom.getName() for atom in residue] # PRODY
+            #is_regular_res = ("CA" in atom_names and "O" in atom_names) # PRODY
+            res_id = residue.get_id()[0] #BIOPYTHON
+            if (res_id==' ' or res_id=='H_MSE' or res_id=='H_M3L' or res_id=='H_CAS') and is_regular_res: # BIOPYTHON
             # i don't know what H_HSE, H_M3L, and H_CAS are doing 
-            # because they aren't in three_to_one, so those should thrown an error
-            # long story short, I don't think we have to worry about them 
-            #if is_regular_res:
-                residue_name = residue.get_resname()
-                #residue_name = residue.getResname()
+            # because they aren't in three_to_one, so those should throw an error
+            # long story short, I don't think we have to worry about them when switching from biopython to prody
+            #if is_regular_res: # PRODY
+                residue_name = residue.get_resname() # BIOPYTHON
+                #residue_name = residue.getResname() # PRODY
                 chain_seq += three_to_one[residue_name]
+        if chain_seq == "": # empty chain, like a nucleic acid chain (see 8ZWK)
+            continue        # FYI, currently, a non-empty chain with certain invalid residues will throw an error at the three_to_one[residue_name] above
         sequence += chain_seq
         start_mask.append(1)
         for _ in range(1,len(chain_seq)):
