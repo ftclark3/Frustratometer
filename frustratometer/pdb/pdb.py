@@ -79,8 +79,7 @@ def get_sequence(pdb_file: str,
         if type(chain) == list:
             all_chains = chain
         elif type(chain) == str:
-            #all_chains = [id for id in chain if id != " "] # remove spaces if present in string # PRODY
-            all_chains=[chain] # BIOPYTHON
+            all_chains = [id for id in chain if id != " "] # remove spaces if present in string
         else:
             raise TypeError(f"chain must be list or str but was {type(chain)}")
     sequence = ""
