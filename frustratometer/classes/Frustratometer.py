@@ -246,9 +246,9 @@ class Frustratometer:
         elif kind in ['mutational', 'configurational', 'contact']:
             if kind == 'configurational' and 'configurational_frustration' in dir(self):
                 #TODO: Correct this function for different aa_freq than WT --- think this has been done already?
-                frustration = self.configurational_frustration(aa_freq=aa_freq, correction=correction, n_decoys=n_decoys)
-                assert np.all(frustration==frustration.T), f"configurational frustration matrix was not symmetric! Max difference: {np.max(frustration-frustration.T)}"
-                return frustration
+                frustration_values = self.configurational_frustration(aa_freq=aa_freq, correction=correction, n_decoys=n_decoys)
+                assert np.all(frustration_values==frustration_values.T), f"configurational frustration matrix was not symmetric! Max difference: {np.max(frustration_values-frustration_values.T)}"
+                return frustration_values
             if aa_freq is None:
                 aa_freq = self.contact_freq
             frustration_values=frustration.compute_pair_frustration(decoy_fluctuation, aa_freq, correction)
