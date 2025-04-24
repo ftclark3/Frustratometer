@@ -62,5 +62,8 @@ def repair_pdb(pdb_file: str, chain: str, pdb_directory: Path= Path.cwd()) -> PD
                 new_atom = new_top.addAtom(old_atom.name,old_atom.element,new_residue,id=old_atom.id)
 
     # use keepIds=True when writing to preserve chain IDs
+    # changing it to False causes test_multichain_density to fail for structure_file1-density_file1
+    # because chains a, b, c, ... get renamed to A, B, C, ... and end up getting confused
+    # with the real chains A, B, C, ...
     PDBFile.writeFile(new_top, fixer.positions, open(f"{pdb_directory}/{pdbID}_cleaned.pdb", 'w'),keepIds=True)
     return fixer
