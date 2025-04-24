@@ -51,5 +51,16 @@ def repair_pdb(pdb_file: str, chain: str, pdb_directory: Path= Path.cwd()) -> PD
         print("Unable to add missing atoms")
 
     fixer.addMissingHydrogens(7.0)
-    PDBFile.writeFile(fixer.topology, fixer.positions, open(f"{pdb_directory}/{pdbID}_cleaned.pdb", 'w'),keepIds=True)
+    
+    # renumber residues so that each chain starts at 1
+    new_top = type(fixer.topology)() # an openmm.app.Topology accesed without needing to import it separately
+    for old_chain in fixer.topology.chains():
+        new_chain = new_top.addChain(id=old_chain.id)
+        for old_residue in old_chain.residues():
+            new_residue = new_top.addResidue(old_residue.name,new_chain,id=None) # allow the class to choose residue id
+            for old_atom in old_residue.atoms():
+                new_atom = new_top.addAtom(old_atom.name,old_atom.element,new_residue,id=old_atom.id)
+
+    # use keepIds=True when writing to preserve chain IDs
+    PDBFile.writeFile(new_top, fixer.positions, open(f"{pdb_directory}/{pdbID}_cleaned.pdb", 'w'),keepIds=True)
     return fixer
