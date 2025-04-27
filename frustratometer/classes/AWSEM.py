@@ -382,7 +382,10 @@ class AWSEM(Frustratometer):
                 try:
                     c=np.random.randint(0,segment_distances.shape[0]) # pick a random residue's distance
                 except ValueError:
-                    import pdb; pdb.set_trace()
+                    #import pdb; pdb.set_trace()
+                    print("segment_distances shape issue!")
+                    print(segment_distances.shape)
+                    raise
                 n1=np.random.randint(0,segment_N_small) # pick a random residue's local density 
                 n2=np.random.randint(0,segment_N_small) # pick another random residue's local density
                 qi1=np.random.randint(0,segment_N_big) # pick a random residue 
@@ -390,6 +393,7 @@ class AWSEM(Frustratometer):
                 try:
                     q1=segment_seq_index[qi1] # pick the identity of the random residue
                 except IndexError:
+                    print("qi1 not found in q1!")
                     print(distances)
                     print(seq_index)
                     print(segment_seq_index)
