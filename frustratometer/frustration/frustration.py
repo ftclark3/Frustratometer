@@ -1063,6 +1063,8 @@ def write_tcl_script(pdb_file: Union[Path,str], chain: str, mask: np.array, dist
     for (r1, r2, f ,d, m) in frustrated:
         r1=int(r1)
         r2=int(r2)
+        if abs(r1-r2) == 1: # don't draw interactions between residues adjacent in sequence
+            continue
         if d > 9.5 or d < 3.5:
             continue
         fo.write(f'lassign [[atomselect top "residue {r1} and name CA"] get {{x y z}}] pos1\n')
