@@ -469,7 +469,7 @@ class AWSEM(Frustratometer):
         triu_mask = np.zeros(self.distance_matrix.shape,dtype=np.bool_)
         triu_mask[distances_indices] = True
         for index,bit in enumerate(self.start_mask):
-            if bit==1:
+            if bit==1 and index!=0: # if index is 0, then index-1 is -1, and we don't want to set that to 1
                 assert triu_mask[index,index-1] == 0
                 assert triu_mask[index-1,index] == 0
                 triu_mask[index,index-1] == 1 # pairs crossing chains should be considered, even if they're nearest neighbors in sequence
