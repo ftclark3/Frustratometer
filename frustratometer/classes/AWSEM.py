@@ -468,6 +468,12 @@ class AWSEM(Frustratometer):
         distances_indices = np.triu_indices(self.distance_matrix.shape[0], k=2) # IMPORTANT CHANGE TO MAKE IT MORE LIKE THE TCL SCRIPT!!!
         triu_mask = np.zeros(self.distance_matrix.shape,dtype=np.bool_)
         triu_mask[distances_indices] = True
+        for index,bit in enumerate(self.start_mask):
+            if bit==1:
+                assert triu_mask[index,index-1] == 0
+                assert triu_mask[index-1,index] == 0
+                triu_mask[index,index-1] == 1 # pairs crossing chains should be considered, even if they're nearest neighbors in sequence
+                triu_mask[index-1,index] == 1 # pairs crossing chains should be considered, even if they're nearest neighbors in sequence
         distances = self.distance_matrix * triu_mask
         distances = distances[(distances<self.distance_cutoff_contact) & (distances>0) & (distances>3.5)] # IMPORTANT CHANGE TO MAKE IT MORE LIKE THE TCL SCRIPT!!!
         n_contacts=len(distances)
