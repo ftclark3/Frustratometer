@@ -475,14 +475,14 @@ class AWSEM(Frustratometer):
                 triu_mask[index,index-1] == 1 # pairs crossing chains should be considered, even if they're nearest neighbors in sequence
                 triu_mask[index-1,index] == 1 # pairs crossing chains should be considered, even if they're nearest neighbors in sequence
         distances = self.distance_matrix * triu_mask
-        distances = distances[(distances<self.distance_cutoff_contact) & (distances>0) & (distances>3.5)] # IMPORTANT CHANGE TO MAKE IT MORE LIKE THE TCL SCRIPT!!!
+        distances = distances[(distances<self.distance_cutoff_contact) & (distances>0) & (distances>self.min_contact_distance)] # use 3.5 TO MAKE IT MORE LIKE THE TCL SCRIPT!!!
         n_contacts=len(distances)
 
         n = self.distance_matrix.shape[0]  # Assuming self.distance_matrix is defined and square
         #tri_upper_indices = np.triu_indices(n, k=1)  # k=1 excludes the diagonal
         tri_upper_indices = np.triu_indices(n, k=2)  # k=1 excludes the diagonal #######################IMPORTANT CHANGE TO MAKE IT MORE LIKE THE TCL SCRIPT!!!
-        valid_pairs = (self.distance_matrix[tri_upper_indices] < self.distance_cutoff_contact) & (3.5 < self.distance_matrix[tri_upper_indices])\
-                      & (self.distance_matrix[tri_upper_indices] > 0) ######################3 IMPORTANT CHANGE TO MAKE IT MORE LIKE THE TCL SCRIPT!!!!!!!1
+        valid_pairs = (self.distance_matrix[tri_upper_indices] < self.distance_cutoff_contact)\
+                      & (self.distance_matrix[tri_upper_indices] > self.min_contact_distance) ######################3 IMPORTANT CHANGE TO MAKE IT MORE LIKE THE TCL SCRIPT!!!!!!!1
         indices1,indices2 = (tri_upper_indices[0][valid_pairs], tri_upper_indices[1][valid_pairs])
         self.config_indices1 = indices1
         self.config_indices2 = indices2

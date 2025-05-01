@@ -325,7 +325,8 @@ class Frustratometer:
         tcl_script = frustration.write_tcl_script(self.pdb_file, self.chain, self.mask, self.distance_matrix, self.distance_cutoff,
                                       -self.frustration(kind=single, sequence=sequence, aa_freq=aa_freq),
                                       -self.frustration(kind=pair, sequence=sequence, aa_freq=aa_freq),
-                                      max_connections=max_connections, movie_name=movie_name, still_image_name=still_image_name)
+                                      max_connections=max_connections, movie_name=movie_name, still_image_name=still_image_name,
+                                                                                                               min_contact_distance=self.min_contact_distance)
         frustration.call_vmd(self.pdb_file, tcl_script)
 
     def view_pair_frustration(self, sequence:str = None, pair:str = 'mutational', aa_freq:np.array = None):

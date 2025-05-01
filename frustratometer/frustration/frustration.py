@@ -947,7 +947,8 @@ def plot_singleresidue_decoy_energy(decoy_energy, native_energy, method='cluster
 
 
 def write_tcl_script(pdb_file: Union[Path,str], chain: str, mask: np.array, distance_matrix: np.array, distance_cutoff: float, single_frustration: np.array,
-                    pair_frustration: np.array, tcl_script: Union[Path, str] ='frustration.tcl',max_connections: int =None, movie_name: Union[Path, str] =None, still_image_name: Union[Path, str] =None) -> Union[Path, str]:
+                    pair_frustration: np.array, tcl_script: Union[Path, str] ='frustration.tcl',max_connections: int =None, movie_name: Union[Path, str] =None, still_image_name: Union[Path, str] =None,
+                    min_contact_distance=3.5) -> Union[Path, str]:
     """
     Writes a tcl script that can be run with VMD to superimpose the frustration patterns onto the corresponding PDB structure. 
 
@@ -1044,11 +1045,11 @@ def write_tcl_script(pdb_file: Union[Path,str], chain: str, mask: np.array, dist
         pos1 = selection.select(f'resindex {r1} and (name CB or (resname GLY and name CA))').getCoords()[0] # chain is unnecessary because resindex is unique
         pos2 = selection.select(f'resindex {r2} and (name CB or (resname GLY and name CA))').getCoords()[0] # chain is unnecessary because resindex is unique
         distance = np.linalg.norm(pos1 - pos2)
-        if d > 9.5 or d < 3.5:
+        if d > 9.5 or d < min_contact_distance:
             continue
         fo.write(f'lassign [[atomselect top "residue {r1} and name CA"] get {{x y z}}] pos1\n') # chain is unnecessary because resindex is unique
         fo.write(f'lassign [[atomselect top "residue {r2} and name CA"] get {{x y z}}] pos2\n') # chain is unnecessary because resindex is unique
-        if 3.5 <= distance <= 6.5:
+        if min_contact_distance <= distance <= 6.5:
             fo.write(f'draw line $pos1 $pos2 style solid width 2\n')
         else:
             fo.write(f'draw line $pos1 $pos2 style dashed width 2\n')
@@ -1065,11 +1066,11 @@ def write_tcl_script(pdb_file: Union[Path,str], chain: str, mask: np.array, dist
         r2=int(r2)
         if abs(r1-r2) == 1: # don't draw interactions between residues adjacent in sequence
             continue
-        if d > 9.5 or d < 3.5:
+        if d > 9.5 or d < min_contact_distance:
             continue
         fo.write(f'lassign [[atomselect top "residue {r1} and name CA"] get {{x y z}}] pos1\n')
         fo.write(f'lassign [[atomselect top "residue {r2} and name CA"] get {{x y z}}] pos2\n')
-        if 3.5 <= d <= 6.5:
+        if min_contact_distance <= d <= 6.5:
             fo.write(f'draw line $pos1 $pos2 style solid width 2\n')
         else:
             fo.write(f'draw line $pos1 $pos2 style dashed width 2\n')
