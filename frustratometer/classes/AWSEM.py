@@ -80,13 +80,13 @@ class AWSEM(Frustratometer):
         -------
         AWSEM object
         """
+
+        #Set attributes
+        p = AWSEMParameters(**parameters)
         ############################################################
         # probably should delete this once the min contact distance is integrated into the compute_mask function
         self.min_contact_distance = p.min_contact_distance
         ############################################################
-
-        #Set attributes
-        p = AWSEMParameters(**parameters)
         if p.min_sequence_separation_contact is None:
             p.min_sequence_separation_contact = 1
         if p.min_sequence_separation_rho is None:
