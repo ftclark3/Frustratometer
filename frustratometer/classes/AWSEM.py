@@ -386,11 +386,8 @@ class AWSEM(Frustratometer):
             for i in range(n_decoys): # we do the same number for each chain, so be careful. this could make the computation very long
                 try:
                     c=np.random.randint(0,segment_distances.shape[0]) # pick a random residue's distance
-                except ValueError:
-                    #import pdb; pdb.set_trace()
-                    print("segment_distances shape issue!")
-                    print(segment_distances.shape)
-                    raise
+                except ValueError as e:
+                    raise ValueError("Empty distance matrix found. Maybe your structure has a chain with only 1 amino acid residue?") from e
                 n1=np.random.randint(0,segment_N_small) # pick a random residue's local density 
                 n2=np.random.randint(0,segment_N_small) # pick another random residue's local density
                 qi1=np.random.randint(0,segment_N_big) # pick a random residue 
