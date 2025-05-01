@@ -28,6 +28,7 @@ class AWSEMParameters(BaseModel):
     #Direct contacts
     min_sequence_separation_contact: Optional[int] = Field(0, description="Minimum sequence separation for contact calculation.")
     distance_cutoff_contact: Optional[float] = Field(9.5, description="Distance cutoff for contact calculation. (Angstrom)")
+    min_contact_distance: Optional[float] = Field(3.5, description = "Minimum distance for contact to be considered in frustration matrix and tcl script")
     r_min: float = Field(4.5, description="Minimum distance for direct contact potential. (Angstrom)")
     r_max: float = Field(6.5, description="Maximum distance for direct contact potential. (Angstrom)")
     
@@ -79,7 +80,11 @@ class AWSEM(Frustratometer):
         -------
         AWSEM object
         """
-        
+        ############################################################
+        # probably should delete this once the min contact distance is integrated into the compute_mask function
+        self.min_contact_distance = p.min_contact_distance
+        ############################################################
+
         #Set attributes
         p = AWSEMParameters(**parameters)
         if p.min_sequence_separation_contact is None:
