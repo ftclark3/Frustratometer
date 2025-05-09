@@ -464,6 +464,10 @@ class AWSEM(Frustratometer):
 
 
     def compute_configurational_energies(self):
+        # STEP 1: COMPUTE INDICATOR FUNCTIONS (THEMSELVES FUNCTIONS OF THE DISTANCE MATRIX AND DENSITIES)
+        #         AND RECORD WHICH PAIRS ARE DIRECT, WATER-MEDIATED, AND PROTEIN-MEDIATED INTERACTIONS
+
+        # get distance matrix
         _AA='ARNDCQEGHILKMFPSTWYV'
         seq_index = np.array([_AA.find(aa) for aa in self.sequence]) # this is fine for a multi chain system if sequence and structure are both fixed
         #distances = np.triu(self.distance_matrix)
@@ -480,34 +484,57 @@ class AWSEM(Frustratometer):
         distances = distances[(distances<self.distance_cutoff_contact) & (distances>0) & (distances>self.min_contact_distance)] # use 3.5 TO MAKE IT MORE LIKE THE TCL SCRIPT!!!
         n_contacts=len(distances)
 
+        # get density-based quantities rho and sigma
+        # these ultimately are functions of the distance matrix, but we already did part of the calculation somewhere else,
+        # so we can just get the intermediate values need to complete the calculation from self.rho_r
+        rho_b = np.expand_dims(self.rho_r, 1) #(n,1)
+        rho1 = np.expand_dims(self.rho_r, 0) #(1,n)
+        rho2 = np.expand_dims(self.rho_r, 1) #(n,1)
+        sigma_water = 0.25 * (1 - np.tanh(self.eta_sigma * (rho1 - self.rho_0))) * (1 - np.tanh(self.eta_sigma * (rho2 - self.rho_0))) #(n,n)
+        sigma_protein = 1 - sigma_water #(n,n)
+
+        # compute indicator functions
+        theta = 0.25 * (1 + np.tanh(self.eta * (distances - self.r_min))) * (1 + np.tanh(self.eta * (self.r_max - distances))) # (c,)
+        thetaII = 0.25 * (1 + np.tanh(self.eta * (distances - self.r_minII))) * (1 + np.tanh(self.eta * (self.r_maxII - distances))) #(c,)
+        burial_indicator = np.tanh(self.burial_kappa * (rho_b - self.burial_ro_min)) + np.tanh(self.burial_kappa * (self.burial_ro_max - rho_b)) #(n,3)  
+        charges = np.array([0, 1, 0, -1, 0, 0, -1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0])
+        electrostatics_indicator = np.exp(-distances / self.electrostatics_screening_length) / distances
+
+        # record pairs (i,j) corresponding to direct, water mediated, and protein mediated interactions
         n = self.distance_matrix.shape[0]  # Assuming self.distance_matrix is defined and square
         #tri_upper_indices = np.triu_indices(n, k=1)  # k=1 excludes the diagonal
         tri_upper_indices = np.triu_indices(n, k=2)  # k=1 excludes the diagonal #######################IMPORTANT CHANGE TO MAKE IT MORE LIKE THE TCL SCRIPT!!!
         valid_pairs = (self.distance_matrix[tri_upper_indices] < self.distance_cutoff_contact)\
                       & (self.distance_matrix[tri_upper_indices] > self.min_contact_distance) ######################3 IMPORTANT CHANGE TO MAKE IT MORE LIKE THE TCL SCRIPT!!!!!!!1
+        valid_pairs_direct = (self.distance_matrix[tri_upper_indices] < 6.5)\
+                      & (self.distance_matrix[tri_upper_indices] >= 4.5)
+        valid_pairs_long = (self.distance_matrix[tri_upper_indices] <= 9.5)\
+                      & (self.distance_matrix[tri_upper_indices] >= 6.5)
         indices1,indices2 = (tri_upper_indices[0][valid_pairs], tri_upper_indices[1][valid_pairs])
+        direct_indices1,direct_indices2 = (tri_upper_indices[0][valid_pairs_direct], tri_upper_indices[1][valid_pairs_direct])
+        long_indices1, long_indices2 = (tri_upper_indices[0][valid_pairs_long], tri_upper_indices[1][valid_pairs_long])
+        wat_indices1 = []
+        wat_indices2 = []
+        prot_indices1 = []
+        prot_indices2 = []
+        for pair in zip(long_indices1,long_indices2):
+            if self.sigma_water[pair] > self.sigma_protein[pair]:
+                wat_indices1.append(pair[0])
+                wat_indices2.append(pair[1])
+            else:
+                prot_indices1.append(pair[0])
+                prot_indices2.append(pair[1])
         self.config_indices1 = indices1
         self.config_indices2 = indices2
-        # for n1,n2,c in zip(indices1,indices2,range(n_contacts)):
-        #     assert self.distance_matrix[n1,n2] == distances[c]
-        
-        rho_b = np.expand_dims(self.rho_r, 1) #(n,1)
-        rho1 = np.expand_dims(self.rho_r, 0) #(1,n)
-        rho2 = np.expand_dims(self.rho_r, 1) #(n,1)
+        self.direct_indices1 = direct_indices1
+        self.direct_indices2 = direct_indices2
+        self.wat_indices1 = wat_indices1
+        self.wat_indices2 = wat_indices2
+        self.prot_indices1 = prot_indices1
+        self.prot_indices2 = prot_indices2
 
-        sigma_water = 0.25 * (1 - np.tanh(self.eta_sigma * (rho1 - self.rho_0))) * (1 - np.tanh(self.eta_sigma * (rho2 - self.rho_0))) #(n,n)
-        sigma_protein = 1 - sigma_water #(n,n)
-
-        #Calculate theta and indicators
-        theta = 0.25 * (1 + np.tanh(self.eta * (distances - self.r_min))) * (1 + np.tanh(self.eta * (self.r_max - distances))) # (c,)
-        thetaII = 0.25 * (1 + np.tanh(self.eta * (distances - self.r_minII))) * (1 + np.tanh(self.eta * (self.r_maxII - distances))) #(c,)
-        burial_indicator = np.tanh(self.burial_kappa * (rho_b - self.burial_ro_min)) + np.tanh(self.burial_kappa * (self.burial_ro_max - rho_b)) #(n,3)
-           
-        charges = np.array([0, 1, 0, -1, 0, 0, -1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0])
-        electrostatics_indicator = np.exp(-distances / self.electrostatics_screening_length) / distances
-
-        # decoy_data_columns=['decoy_i','i_resno','j_resno','ires_type','jres_type','aa1','aa2','rij','rho_i','rho_j','water_energy','burial_energy_i','burial_energy_j','electrostatic_energy','total_energies']
-        # decoy_data=[]
+        # STEP 2: COMPUTE PAIR ENERGIES (sum of direct, water-mediated, protein-mediated, electrostatics, and burial energies 
+        #                                for all for pairs (i,j))
         configurational_energies=np.zeros((n,n))
         for c in range(n_contacts):
             n1=indices1[c]
@@ -527,9 +554,8 @@ class AWSEM(Frustratometer):
             energy=(burial_energy1+burial_energy2+contact_energy+electrostatics_energy)
             configurational_energies[n1,n2]=energy
             configurational_energies[n2,n1]=energy
-            # decoy_data+=[[c, n1, n2, q1, q2, _AA[q1],_AA[q2], distances[c], self.rho_r[n1], self.rho_r[n2], contact_energy/4.184, burial_energy1/4.184, burial_energy2/4.184, electrostatics_energy/4.184, energy/4.184]]
-        # import pandas as pd
-        return configurational_energies #, pd.DataFrame(decoy_data, columns=decoy_data_columns)
+
+        return configurational_energies 
     
     def configurational_frustration(self,aa_freq=None, correction=0, n_decoys=4000):
         mean_decoy_energy, std_decoy_energy = self.compute_configurational_decoy_statistics(n_decoys=n_decoys,aa_freq=aa_freq)
