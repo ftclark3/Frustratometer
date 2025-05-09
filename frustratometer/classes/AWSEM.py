@@ -510,15 +510,19 @@ class AWSEM(Frustratometer):
                       & (self.distance_matrix[tri_upper_indices] >= 4.5)
         valid_pairs_long = (self.distance_matrix[tri_upper_indices] <= 9.5)\
                       & (self.distance_matrix[tri_upper_indices] >= 6.5)
+        valid_pairs_orphan = (self.distance_matrix[tri_upper_indices] < 4.5)\
+            & (self.distance_matrix[tri_upper_indices] > self.min_contact_distance) 
+            # finally, select pairs whose frustration indices are considered but do not fall into short or long-range interactions
         indices1,indices2 = (tri_upper_indices[0][valid_pairs], tri_upper_indices[1][valid_pairs])
         direct_indices1,direct_indices2 = (tri_upper_indices[0][valid_pairs_direct], tri_upper_indices[1][valid_pairs_direct])
         long_indices1, long_indices2 = (tri_upper_indices[0][valid_pairs_long], tri_upper_indices[1][valid_pairs_long])
+        orphan_indices1, orphan_indices2 = (tri_upper_indices[0][valid_pairs_orphan], tri_upper_indices[1][valid_pairs_orphan])
         wat_indices1 = []
         wat_indices2 = []
         prot_indices1 = []
         prot_indices2 = []
         for pair in zip(long_indices1,long_indices2):
-            if self.sigma_water[pair] > self.sigma_protein[pair]:
+            if sigma_water[pair] > sigma_protein[pair]:
                 wat_indices1.append(pair[0])
                 wat_indices2.append(pair[1])
             else:
@@ -532,6 +536,8 @@ class AWSEM(Frustratometer):
         self.wat_indices2 = wat_indices2
         self.prot_indices1 = prot_indices1
         self.prot_indices2 = prot_indices2
+        self.orphan_indices1 = orphan_indices1
+        self.orphan_indices2 = orphan_indices2
 
         # STEP 2: COMPUTE PAIR ENERGIES (sum of direct, water-mediated, protein-mediated, electrostatics, and burial energies 
         #                                for all for pairs (i,j))
