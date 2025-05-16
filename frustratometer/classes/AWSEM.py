@@ -25,19 +25,20 @@ class AWSEMParameters(BaseModel):
     burial_ro_min: List[float] = Field([0.0, 3.0, 6.0], description="Minimum radii for burial potential wells. (Angstrom)")
     burial_ro_max: List[float] = Field([3.0, 6.0, 9.0], description="Maximum radii for burial potential wells. (Angstrom)")
     
-    #Direct contacts
-    min_sequence_separation_contact: Optional[int] = Field(0, description="Minimum sequence separation for contact calculation.")
+    # parameters governing all contacts
+    gamma: Union[Path,Gamma] = Field(_path/'data'/'AWSEM_2015.json', description="File or Gamma object containing the Gamma values")
     distance_cutoff_contact: Optional[float] = Field(9.5, description="Distance cutoff for contact calculation. (Angstrom)")
     min_contact_distance: Optional[float] = Field(3.5, description = "Minimum distance for contact to be considered in frustration matrix and tcl script")
+    min_sequence_separation_contact: Optional[int] = Field(0, description="Minimum sequence separation for contact calculation.")
+
+    #Direct contacts
     r_min: float = Field(4.5, description="Minimum distance for direct contact potential. (Angstrom)")
     r_max: float = Field(6.5, description="Maximum distance for direct contact potential. (Angstrom)")
     
-    #Mediated contacts
-    gamma: Union[Path,Gamma] = Field(_path/'data'/'AWSEM_2015.json', description="File or Gamma object containing the Gamma values")
+    #Long-range (water- or protein-mediated contacts)
     r_minII: float = Field(6.5, description="Minimum distance for mediated contact potential. (Angstrom)")
     r_maxII: float = Field(9.5, description="Maximum distance for mediated contact potential. (Angstrom)")
     eta_sigma: float = Field(7.0, description="Sharpness of the density-based switching function between protein-mediated and water-mediated contacts.")
-    
 
     #Membrane
     membrane_gamma: Union[Path,Gamma] = Field(_path/'data'/'AWSEM_membrane_2015.json', description="File or Gamma object containing the membrane Gamma values (for membrane proteins)")
@@ -482,11 +483,10 @@ class AWSEM(Frustratometer):
                 triu_mask[index-1,index] == 1 # pairs crossing chains should be considered, even if they're nearest neighbors in sequence
         distances = self.distance_matrix * triu_mask
         distances = distances[(distances<self.distance_cutoff_contact) & (distances>0) & (distances>self.min_contact_distance)] # use 3.5 TO MAKE IT MORE LIKE THE TCL SCRIPT!!!
-        n_contacts=len(distances)
 
         # get density-based quantities rho and sigma
         # these ultimately are functions of the distance matrix, but we already did part of the calculation somewhere else,
-        # so we can just get the intermediate values need to complete the calculation from self.rho_r
+        # and stored these intermediate values self.rho_r
         rho_b = np.expand_dims(self.rho_r, 1) #(n,1)
         rho1 = np.expand_dims(self.rho_r, 0) #(1,n)
         rho2 = np.expand_dims(self.rho_r, 1) #(n,1)
@@ -503,7 +503,7 @@ class AWSEM(Frustratometer):
         # record pairs (i,j) corresponding to direct, water mediated, and protein mediated interactions
         n = self.distance_matrix.shape[0]  # Assuming self.distance_matrix is defined and square
         #tri_upper_indices = np.triu_indices(n, k=1)  # k=1 excludes the diagonal
-        tri_upper_indices = np.triu_indices(n, k=2)  # k=1 excludes the diagonal #######################IMPORTANT CHANGE TO MAKE IT MORE LIKE THE TCL SCRIPT!!!
+        tri_upper_indices = np.triu_indices(n, k=10)  # k=10 excludes up to and including |i-j|=9
         valid_pairs = (self.distance_matrix[tri_upper_indices] < self.distance_cutoff_contact)\
                       & (self.distance_matrix[tri_upper_indices] > self.min_contact_distance) ######################3 IMPORTANT CHANGE TO MAKE IT MORE LIKE THE TCL SCRIPT!!!!!!!1
         valid_pairs_direct = (self.distance_matrix[tri_upper_indices] < 6.5)\
@@ -540,8 +540,11 @@ class AWSEM(Frustratometer):
         self.orphan_indices2 = orphan_indices2
 
         # STEP 2: COMPUTE PAIR ENERGIES (sum of direct, water-mediated, protein-mediated, electrostatics, and burial energies 
-        #                                for all for pairs (i,j))
+        #                                for all pairs (i,j))
         configurational_energies=np.zeros((n,n))
+        assert len(indices1)==len(indices2), f"indices lengths: {len(indices1)},{len(indices2)}" 
+        # (indices1[k],indices2[k]) gives the kth valid pair (i,j)
+        n_contacts=len(indices1)
         for c in range(n_contacts):
             n1=indices1[c]
             n2=indices2[c]

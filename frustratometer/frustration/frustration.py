@@ -9,6 +9,7 @@ _AA = '-ACDEFGHIKLMNPQRSTVWY'
 def compute_mask(distance_matrix: np.array,
                  maximum_contact_distance: Union[float, None] = None,
                  minimum_sequence_separation: Union[int, None] = None,
+                 maximum_sequence_separation: Union[int, None] = None,
                  start_mask: list = None) -> np.array:
     """
     Computes a 2D Boolean mask from a given distance matrix based on a distance cutoff and a sequence separation cutoff.
@@ -26,6 +27,10 @@ def compute_mask(distance_matrix: np.array,
         A minimum sequence distance threshold. Pairs of residues with sequence indices
         differing by at least this value are marked as True in the mask. If None,
         the sequence distance criterion is ignored. Default is None.
+    maximum_sequence_separation : int, optional
+        Maximum sequence distance threshold. Pairs of residues with sequence indices 
+        differing by no more than this value are marked as True in the mask. If None,
+        the sequence distance criterion is ignore. Default is None.
     start_mask: list, optional
         A list where the value at each index indicates whether the same index in the 
         protein structure is the first amino acid in a chain (1 for True, 0 for False).
@@ -61,6 +66,10 @@ def compute_mask(distance_matrix: np.array,
                     if sum(start_mask[:i+1])!=sum(start_mask[:j+1]) and abs(i-j)<minimum_sequence_separation:
                         assert mask[i,j]==0
                         mask[i,j]=1
+    #if maximum_sequence_separation is not None:
+    #    sequence_distance = sdist.squareform(sdist.pdist(np.arange(seq_len)[:, np.newaxis]))
+    #    mask *= sequence_distance <= maximum_sequence_separation
+    #    # not going to bother with interchain stuff cause the concept of a maximum sequence separation is unphysical anyway
     if maximum_contact_distance is not None:
         mask *= distance_matrix <= maximum_contact_distance
 
@@ -1147,7 +1156,409 @@ def write_tcl_script(pdb_file: Union[Path,str], chain: str, mask: np.array, dist
     fo.close()
     return tcl_script
 
+def write_line_draw_commands(fo,info):
+    """ 
+    Small function to avoid repeating code
 
+    fo: opened file object
+    info: zip(residue indices, residue indices, frustration_indices, draw solid line bools, draw dashed line bools)
+
+    Returns:
+    None
+    """
+    for (r1, r2, f, solid_line, dashed_line) in info:
+        r1=int(r1)
+        r2=int(r2)
+        if not (solid_line or dashed_line): # the masks are telling us to skip these
+            continue
+        fo.write(f'lassign [[atomselect top "residue {r1} and name CA"] get {{x y z}}] pos1\n') # chain is unnecessary because residue is a unique index
+        fo.write(f'lassign [[atomselect top "residue {r2} and name CA"] get {{x y z}}] pos2\n') # chain is unnecessary because residue is a unique index
+        if solid_line: # conventionally used for shorter distances (0-6.5 or 3.5-6.5 or 4.5-6.5)
+            fo.write(f'draw line $pos1 $pos2 style solid width 2\n')
+        elif dashed_line: # conventionally used for longer distances (6.5-9.5)
+            fo.write(f'draw line $pos1 $pos2 style dashed width 2\n')
+        else:
+            raise AssertionError(f"unexpected else block. solid_line was {solid_line} and dashed_line was {dashed_line}\
+                                         (one of them should be True if we've reached this point in the code)")
+
+def mask_based_write_tcl_script(solid_mask: np.array, dashed_mask: np.array, start_residue_index: int,
+                                single_frustration: np.array,pair_frustration: np.array,
+                                tcl_script: Union[Path, str] ='frustration.tcl',
+                                movie_name: Union[Path, str] =None, still_image_name: Union[Path, str] =None,
+                                show_minimally: bool = True, show_highly: bool = True, show_neutral: bool = False,
+                                ) -> Union[Path, str]:
+    """
+    Writes a tcl script that can be run with VMD to superimpose the frustration patterns onto the corresponding PDB structure. 
+
+    This function removes the distance and sequence separation constraints in write_tcl_script and instead relies on the mask
+    for all information about which pairs to include and which pairs to exclude. This allows us to pass in the same unified mask
+    used to determine which pairs (i,j) the frustration statistics were computed for, ensuring that our frustratograms accurately
+    represent our calculated proportions of minimally and highly frustrated contacts.
+
+    Parameters
+    ----------
+    solid_mask : np.array
+        A 2D Boolean array indicating each pair (i,j) for which a solid line is to be drawn in the frustratogram,
+        conditioned on the frustration index (i,j) falling into a bin (category) that is to be shown.
+        Typically, neutral contacts are not shown, so a line is typically not drawn between i and j if their frustration
+        index falls in the neutral range, regardless of the values of solid_mask[i,j] and dashed_mask[i,j] 
+        The mask should have dimensions (L, L), where L is the length of the sequence in the entire protein
+        or the subselection (usually, a chain) that was extracted from a larger system when initializing the Structure.
+    dashed_mask: np.array
+        A 2D Boolean array indicating each pair (i,j) for which a dashed line is to be drawn in the frustratogram,
+        subject to the same qualification described above for solid_mask.
+    start_residue_index: int
+        Residue index of the first residue in our subselection, mask[0], in the complete structure file that
+        was used to initialize the Structure class
+    single_frustration : np.array
+        Array containing single residue frustration index values
+    pair_frustration : np.array
+        Array containing pair (ex. configurational, mutational, contact) frustration index values
+    tcl_script : Path or str
+        Output tcl script file with static structure
+    movie_name : Path or str
+        Output movie file with rotating structure
+    still_image_name : Path or str
+        Output image file with still image
+    show_minimally: bool = True
+        Draw lines for minimally frustrated contacts
+    show_highly: bool = True
+        Draw lines for highly frustrated contacts
+    show_neutral: bool = False
+        Draw lines for neutral contacts
+
+    Returns
+    -------
+    tcl_script : Path or str
+        tcl script file
+    """
+
+    # check input
+    if np.max(solid_mask+dashed_mask) > 1:
+        raise ValueError("Found at least one pair (i,j) where both solid and dashed lines are set to be drawn!")
+
+    # open output file the old fashoined way
+    fo = open(tcl_script, 'w+')\
+
+    # clean data
+    single_frustration = np.nan_to_num(single_frustration,nan=0,posinf=0,neginf=0)
+    pair_frustration = np.nan_to_num(pair_frustration,nan=0,posinf=0,neginf=0)
+    
+    # adjust residue indices if necessary
+    assert single_frustration.shape[0] == pair_frustration.shape[0] == pair_frustration.shape[1]
+    residues = np.arange(start_residue_index, start_residue_index+single_frustration.shape[0])
+
+    # initialize all residue colors at neutral (0) beta value
+    fo.write(f'[atomselect top all] set beta 0\n')
+
+    # modify beta values to indicate single residue frustration (will all be 0 if we chose not to calculate single residue frustration)
+    for r, f in zip(residues, single_frustration):
+        fo.write(f'[atomselect top "chain {chain} and residue {int(r)}"] set beta {f}\n')
+
+    # pair frustration (either mutational or configurational)
+    r1, r2 = np.meshgrid(residues, residues, indexing='ij')
+    try:
+        sel_frustration = np.array([r1.ravel(), r2.ravel(), pair_frustration.ravel(), solid_mask.ravel(), dashed_mask.ravel()]).T
+    except ValueError:
+        print(r1.shape)
+        print(r2.shape)
+        print(pair_frustration.shape)
+        print(mask.shape)
+        raise
+    # minimally frustrated
+    minimally_frustrated = sel_frustration[sel_frustration[:, 2] < -0.78]
+    sort_index = np.argsort(minimally_frustrated[:, 2])
+    minimally_frustrated = minimally_frustrated[sort_index]
+    fo.write('draw color green\n')
+    if show_minimally:
+        write_line_draw_commands(fo,minimally_frustrated)
+    # neutral
+    neutral = sel_frustration[(sel_frustration[:, 2] > -0.78) & (sel_frustration[:, 2] < 1)]
+    sort_index = np.argsort(minimally_frustrated[:, 2])
+    minimally_frustrated = minimally_frustrated[sort_index]
+    fo.write('draw color yellow\n')
+    if show_neutral:
+        write_line_draw_commands(fo,neutral)
+    # highly frustrated
+    frustrated = sel_frustration[sel_frustration[:, 2] > 1]
+    sort_index = np.argsort(frustrated[:, 2])[::-1] # i don't know why we reverse the order of elements in this case
+    frustrated = frustrated[sort_index]
+    fo.write('draw color red\n')
+    if show_highly:
+        write_line_draw_commands(fo,frustrated)
+    
+    # boilerplate vmd visualization commands 
+    fo.write('''mol delrep top 0
+            mol color Beta
+            mol representation NewCartoon 0.300000 10.000000 4.100000 0
+            mol selection all
+            mol material Opaque
+            mol addrep top
+            color scale method GWR
+            ''')
+    if movie_name:
+        fo.write('''axes location Off
+            color Display Background white
+            display resize 800 800
+            display projection Orthographic
+            display depthcue off
+            display resetview
+            display resize [expr [lindex [display get size] 0]/2*2] [expr [lindex [display get size] 1]/2*2] ;#Resize display to even height and width
+            display update ui
+
+            # Set up the movie directory and base file name
+            mkdir movie_tmp
+            set workdir "movie_tmp"
+            ''' + f'set basename "{movie_name}"' + '''
+            set numframes 360
+            set framerate 25
+
+            # Function to rotate the molecule and capture frames
+            proc captureFrames {} {
+                global workdir basename numframes
+                for {set i 0} {$i < $numframes} {incr i} {
+                    # Rotate the molecule around the Y-axis
+                    rotate y by 1
+                    
+                    # Capture the frame
+                    set output [format "%s/$basename.%05d.tga" $workdir $i]
+                    render snapshot $output
+                }
+            }
+
+            # Function to convert frames to MP4
+            proc convertToMP4 {} {
+                global workdir basename numframes framerate
+
+                set mybasefilename [format "%s/%s" $workdir $basename]
+                set outputFile [format "%s.mp4" $basename]
+                
+                # Construct and execute the ffmpeg command
+                
+                set command "ffmpeg -y -framerate $framerate -i $mybasefilename.%05d.tga -c:v libx264 -profile:v high -crf 20 -pix_fmt yuv420p $outputFile"
+                puts "Executing: $command"
+                exec ffmpeg -y -framerate $framerate -i $mybasefilename.%05d.tga -c:v libx264 -profile:v high -crf 20 -pix_fmt yuv420p $outputFile >&@ stdout
+            }
+
+            # Main script execution
+            captureFrames
+            convertToMP4
+
+            # Cleanup the TGA files if desired
+            for {set i 0} {$i < $numframes} {incr i} {
+                set output [format "%s/$basename.%05d.tga" $workdir $i]
+                exec rm $output
+            }
+            exit
+        ''')
+    elif still_image_name:
+        fo.write(f'set output "{still_image_name}"' + '''
+            render snapshot $output
+            exit
+        ''')
+    
+    # close tcl script file the old fashioned way
+    fo.close()
+
+    # return tcl_script as a string, but we don't usually capture or use the return value
+    return tcl_script
+
+
+
+#def write_tcl_script(pdb_file: Union[Path,str], chain: str, mask: np.array, distance_matrix: np.array, distance_cutoff: float, single_frustration: np.array,
+#                    pair_frustration: np.array, tcl_script: Union[Path, str] ='frustration.tcl',max_connections: int =None, movie_name: Union[Path, str] =None, still_image_name: Union[Path, str] =None) -> Union[Path, str]:
+    """
+    Writes a tcl script that can be run with VMD to superimpose the frustration patterns onto the corresponding PDB structure. 
+
+    Parameters
+    ----------
+    pdb_file :  Path or str
+        pdb file name
+    chain : str
+        Select chain from pdb
+    mask : np.array
+        A 2D Boolean array that determines which residue pairs should be considered in the energy computation. The mask should have dimensions (L, L), where L is the length of the sequence.
+    distance_matrix : np.array
+        LxL array for sequence of length L, describing distances between contacts
+    distance_cutoff : float
+        Maximum distance at which a contact occurs
+    single_frustration : np.array
+        Array containing single residue frustration index values
+    pair_frustration : np.array
+        Array containing pair (ex. configurational, mutational, contact) frustration index values
+    tcl_script : Path or str
+        Output tcl script file with static structure
+    max_connections : int
+        Maximum number of pair frustration values visualized in tcl file
+    movie_name : Path or str
+        Output movie file with rotating structure
+    still_image_name : Path or str
+        Output image file with still image
+    
+
+    Returns
+    -------
+    tcl_script : Path or str
+        tcl script file
+    """
+    """
+    fo = open(tcl_script, 'w+')
+    single_frustration = np.nan_to_num(single_frustration,nan=0,posinf=0,neginf=0)
+    pair_frustration = np.nan_to_num(pair_frustration,nan=0,posinf=0,neginf=0)
+    
+    if chain == None:
+        chain_selection = '".*"'
+    else:
+        chain_selection = chain
+    
+    structure = prody.parsePDB(str(pdb_file))
+
+    # do single residue frustration for each chain and pair frustration within each chain
+    for chain in structure.iterChains():
+        selection = structure.select('protein', chain=chain)
+        residues = np.unique(selection.getResindices())
+
+        fo.write(f'[atomselect top all] set beta 0\n')
+        # Single residue frustration
+        for r, f in zip(residues, single_frustration):
+            # print(f)
+            fo.write(f'[atomselect top "chain {chain} and residue {int(r)}"] set beta {f}\n')
+
+        # Mutational frustration:
+        r1, r2 = np.meshgrid(residues, residues, indexing='ij')
+        try:
+            sel_frustration = np.array([r1.ravel(), r2.ravel(), pair_frustration.ravel(),distance_matrix.ravel(), mask.ravel()]).T
+        except ValueError:
+            print(r1.shape)
+            print(r2.shape)
+            print(pair_frustration.shape)
+            print(distance_matrix.shape)
+            print(mask.shape)
+            raise
+        #Filter with mask and distance
+        if distance_cutoff:
+            mask_dist=(sel_frustration[:, -2] <= distance_cutoff)
+        else:
+            mask_dist=np.ones(len(sel_frustration),dtype=bool)
+        sel_frustration = sel_frustration[mask_dist & (sel_frustration[:, -1] > 0)]
+        
+        minimally_frustrated = sel_frustration[sel_frustration[:, 2] < -0.78]
+        #minimally_frustrated = sel_frustration[sel_frustration[:, 2] < -1.78]
+        sort_index = np.argsort(minimally_frustrated[:, 2])
+        minimally_frustrated = minimally_frustrated[sort_index]
+        if max_connections:
+            #minimally_frustrated = minimally_frustrated[:max_connections]
+            raise NotImplementedError("need to fix this because we changed to support multichain files")
+
+        fo.write('draw color green\n')
+        for (r1, r2, f, d ,m) in minimally_frustrated:
+            r1=int(r1)
+            r2=int(r2)
+            if abs(r1-r2) == 1: # don't draw interactions between residues adjacent in sequence
+                continue
+            pos1 = selection.select(f'resindex {r1} and chain {chain} and (name CB or (resname GLY and name CA))').getCoords()[0]
+            pos2 = selection.select(f'resindex {r2} and chain {chain} and (name CB or (resname GLY and name CA))').getCoords()[0]
+            distance = np.linalg.norm(pos1 - pos2)
+            if d > 9.5 or d < 3.5:
+                continue
+            fo.write(f'lassign [[atomselect top "resid {r1} and name CA and chain {chain}"] get {{x y z}}] pos1\n')
+            fo.write(f'lassign [[atomselect top "resid {r2} and name CA and chain {chain}"] get {{x y z}}] pos2\n')
+            if 3.5 <= distance <= 6.5:
+                fo.write(f'draw line $pos1 $pos2 style solid width 2\n')
+            else:
+                fo.write(f'draw line $pos1 $pos2 style dashed width 2\n')
+
+        frustrated = sel_frustration[sel_frustration[:, 2] > 1]
+        #frustrated = sel_frustration[sel_frustration[:, 2] > 0]
+        sort_index = np.argsort(frustrated[:, 2])[::-1]
+        frustrated = frustrated[sort_index]
+        if max_connections:
+            frustrated = frustrated[:max_connections]
+        fo.write('draw color red\n')
+        for (r1, r2, f ,d, m) in frustrated:
+            r1=int(r1)
+            r2=int(r2)
+            if d > 9.5 or d < 3.5:
+                continue
+            fo.write(f'lassign [[atomselect top "resid {r1} and name CA and chain {chain}"] get {{x y z}}] pos1\n')
+            fo.write(f'lassign [[atomselect top "resid {r2} and name CA and chain {chain}"] get {{x y z}}] pos2\n')
+            if 3.5 <= d <= 6.5:
+                fo.write(f'draw line $pos1 $pos2 style solid width 2\n')
+            else:
+                fo.write(f'draw line $pos1 $pos2 style dashed width 2\n')
+    
+    fo.write('''mol delrep top 0
+            mol color Beta
+            mol representation NewCartoon 0.300000 10.000000 4.100000 0
+            mol selection all
+            mol material Opaque
+            mol addrep top
+            color scale method GWR
+            ''')
+    
+    if movie_name:
+        fo.write('''axes location Off
+            color Display Background white
+            display resize 800 800
+            display projection Orthographic
+            display depthcue off
+            display resetview
+            display resize [expr [lindex [display get size] 0]/2*2] [expr [lindex [display get size] 1]/2*2] ;#Resize display to even height and width
+            display update ui
+
+            # Set up the movie directory and base file name
+            mkdir movie_tmp
+            set workdir "movie_tmp"
+            ''' + f'set basename "{movie_name}"' + '''
+            set numframes 360
+            set framerate 25
+
+            # Function to rotate the molecule and capture frames
+            proc captureFrames {} {
+                global workdir basename numframes
+                for {set i 0} {$i < $numframes} {incr i} {
+                    # Rotate the molecule around the Y-axis
+                    rotate y by 1
+                    
+                    # Capture the frame
+                    set output [format "%s/$basename.%05d.tga" $workdir $i]
+                    render snapshot $output
+                }
+            }
+
+            # Function to convert frames to MP4
+            proc convertToMP4 {} {
+                global workdir basename numframes framerate
+
+                set mybasefilename [format "%s/%s" $workdir $basename]
+                set outputFile [format "%s.mp4" $basename]
+                
+                # Construct and execute the ffmpeg command
+                
+                set command "ffmpeg -y -framerate $framerate -i $mybasefilename.%05d.tga -c:v libx264 -profile:v high -crf 20 -pix_fmt yuv420p $outputFile"
+                puts "Executing: $command"
+                exec ffmpeg -y -framerate $framerate -i $mybasefilename.%05d.tga -c:v libx264 -profile:v high -crf 20 -pix_fmt yuv420p $outputFile >&@ stdout
+            }
+
+            # Main script execution
+            captureFrames
+            convertToMP4
+
+            # Cleanup the TGA files if desired
+            for {set i 0} {$i < $numframes} {incr i} {
+                set output [format "%s/$basename.%05d.tga" $workdir $i]
+                exec rm $output
+            }
+            exit
+        ''')
+    elif still_image_name:
+        fo.write(f'set output "{still_image_name}"' + '''
+            render snapshot $output
+            exit
+        ''')
+    fo.close()
+    return tcl_script
+"""
 
 #def write_tcl_script(pdb_file: Union[Path,str], chain: str, mask: np.array, distance_matrix: np.array, distance_cutoff: float, single_frustration: np.array,
 #                    pair_frustration: np.array, tcl_script: Union[Path, str] ='frustration.tcl',max_connections: int =None, movie_name: Union[Path, str] =None, still_image_name: Union[Path, str] =None) -> Union[Path, str]:
