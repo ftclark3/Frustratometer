@@ -111,9 +111,14 @@ def test_configurational_frustration(test_data):
     structure = frustratometer.Structure(test_data_path/f"{test_data['pdb']}.pdb")
     sequence_separation = 2 if test_data['seqsep'] == 3 else 13
     
+    ##########################################################################
+    # i don't know (or forget) why we do this
+    # this causes what is currently test_data8 and test_data12 to always pass,
+    # which can be confusing when testing modifications to the main frustratometer code
     if test_data['k_electrostatics'] == 1000:
         assert True
         return
+    ###########################################################################
 
     model = frustratometer.AWSEM(structure, distance_cutoff_contact=9.5, 
                                  min_sequence_separation_rho=sequence_separation, 

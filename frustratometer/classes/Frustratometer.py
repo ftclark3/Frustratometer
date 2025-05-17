@@ -211,7 +211,10 @@ class Frustratometer:
         """
         return frustration.compute_scores(self.potts_model)
 
-    def frustration(self, sequence:str = None, kind:str = 'singleresidue', mask:np.array = None, aa_freq:np.array = None, correction:int = 0, n_decoys=4000) -> np.array:
+    def frustration(self, sequence:str = None, kind:str = 'singleresidue', 
+                          mask:np.array = None, aa_freq:np.array = None, 
+                          correction:int = 0, n_decoys=4000,
+                          ) -> np.array:
         """
         Calculates frustration index values.
         
@@ -246,7 +249,7 @@ class Frustratometer:
         elif kind in ['mutational', 'configurational', 'contact']:
             if kind == 'configurational' and 'configurational_frustration' in dir(self):
                 #TODO: Correct this function for different aa_freq than WT --- think this has been done already?
-                frustration_values = self.configurational_frustration(aa_freq=aa_freq, correction=correction, n_decoys=n_decoys)
+                frustration_values = self.configurational_frustration(aa_freq=aa_freq, correction=correction, n_decoys=n_decoys,)
                 assert np.all(frustration_values==frustration_values.T), f"configurational frustration matrix was not symmetric! Max difference: {np.max(frustration_values-frustration_values.T)}"
                 return frustration_values
             if aa_freq is None:

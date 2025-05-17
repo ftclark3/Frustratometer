@@ -162,7 +162,7 @@ class AWSEM(Frustratometer):
         rho *= sequence_mask_rho
         self.rho=rho
         
-        #Calculate sigma water
+        #Calculate sigma water and sigma_protein
         rho_r = (rho).sum(axis=1)
         if self.full_pdb_distance_matrix.shape!=self.distance_matrix.shape:
             if self.burial_in_context==True:
@@ -175,6 +175,9 @@ class AWSEM(Frustratometer):
         rho2 = np.expand_dims(rho_r, 1)
         sigma_water = 0.25 * (1 - np.tanh(p.eta_sigma * (rho1 - p.rho_0))) * (1 - np.tanh(p.eta_sigma * (rho2 - p.rho_0)))
         sigma_protein = 1 - sigma_water
+
+        # use our calculated sigma_water and sigma_protein to classify pairs as direct, protein, water, or orphan (e.g., 3.5-4.5)
+        self.compute_config_indices(sigma_water,sigma_protein)
 
         #Calculate theta and indicators
         theta = 0.25 * (1 + np.tanh(p.eta * (self.distance_matrix - p.r_min))) * (1 + np.tanh(p.eta * (p.r_max - self.distance_matrix)))
@@ -293,6 +296,62 @@ class AWSEM(Frustratometer):
         self.potts_model['J'][:, :, 0, :] = 0
         self.potts_model['J'][:, :, :, 0] = 0
         self._native_energy=None
+
+    def compute_config_indices(self,sigma_water,sigma_protein):
+        # check input
+        if self.distance_cutoff_contact == None:
+            upper_limit = np.inf 
+        else:
+            upper_limit = self.distance_cutoff_contact
+        # record pairs (i,j) corresponding to direct, water mediated, and protein mediated interactions
+        # assuming with our selections that the user hasn't done something silly 
+        # like setting self.distance_cutoff_contact to something less than 9.5
+        # or setting self.min_contact_distance to something greater than 4.5
+        assert self.distance_matrix.shape[0] == self.distance_matrix.shape[1], f"self.distance_matrix (shape {self.distance_matrix.shape}) not square!"
+        n = self.distance_matrix.shape[0]
+        assert np.all(self.distance_matrix==self.distance_matrix.T), "self.distance_matrix was not symmetric!"
+        assert np.all(self.distance_matrix[np.diag_indices(n)] == 0), "main diagonal of self.distance_matrix has nonzero element(s)!"
+        tri_upper_indices = np.triu_indices(n, k=1)  # k=1 excludes the main diagonal, which represents self-distances
+        valid_pairs = (self.distance_matrix[tri_upper_indices] < upper_limit)\
+                      & (self.distance_matrix[tri_upper_indices] > self.min_contact_distance)
+        valid_pairs_direct = (self.distance_matrix[tri_upper_indices] < 6.5)\
+                      & (self.distance_matrix[tri_upper_indices] >= 4.5)
+        valid_pairs_long = (self.distance_matrix[tri_upper_indices] <= 9.5)\
+                      & (self.distance_matrix[tri_upper_indices] >= 6.5)
+        valid_pairs_orphan = (self.distance_matrix[tri_upper_indices] < 4.5)\
+            & (self.distance_matrix[tri_upper_indices] > self.min_contact_distance) 
+            # finally, select pairs whose frustration indices are considered but do not fall into short or long-range interactions
+        valid_pairs_orphan_long = (self.distance_matrix[tri_upper_indices] > 9.5)\
+            & (self.distance_matrix[tri_upper_indices] < upper_limit) 
+            # finally, select pairs whose frustration indices are considered but do not fall into short or long-range interactions
+        indices1,indices2 = (tri_upper_indices[0][valid_pairs], tri_upper_indices[1][valid_pairs])
+        direct_indices1,direct_indices2 = (tri_upper_indices[0][valid_pairs_direct], tri_upper_indices[1][valid_pairs_direct])
+        long_indices1, long_indices2 = (tri_upper_indices[0][valid_pairs_long], tri_upper_indices[1][valid_pairs_long])
+        orphan_indices1, orphan_indices2 = (tri_upper_indices[0][valid_pairs_orphan], tri_upper_indices[1][valid_pairs_orphan])
+        orphan_long_indices1, orphan_long_indices2 = (tri_upper_indices[0][valid_pairs_orphan_long], tri_upper_indices[1][valid_pairs_orphan_long])
+        wat_indices1 = []
+        wat_indices2 = []
+        prot_indices1 = []
+        prot_indices2 = []
+        for pair in zip(long_indices1,long_indices2):
+            if sigma_water[pair] > sigma_protein[pair]:
+                wat_indices1.append(pair[0])
+                wat_indices2.append(pair[1])
+            else:
+                prot_indices1.append(pair[0])
+                prot_indices2.append(pair[1])
+        self.config_indices1 = indices1
+        self.config_indices2 = indices2
+        self.config_direct_indices1 = direct_indices1
+        self.config_direct_indices2 = direct_indices2
+        self.config_wat_indices1 = wat_indices1
+        self.config_wat_indices2 = wat_indices2
+        self.config_prot_indices1 = prot_indices1
+        self.config_prot_indices2 = prot_indices2
+        self.config_orphan_indices1 = orphan_indices1
+        self.config_orphan_indices2 = orphan_indices2
+        self.config_orphan_long_indices1 = orphan_long_indices1
+        self.config_orphan_long_indices2 = orphan_long_indices2 
 
     def compute_configurational_decoy_statistics(self, n_decoys=4000,aa_freq=None):
         # ['A', 'R', 'N', 'D', 'C', 'Q', 'E', 'G', 'H', 'I', 'L', 'K', 'M', 'F', 'P', 'S', 'T', 'W', 'Y', 'V']
@@ -463,26 +522,125 @@ class AWSEM(Frustratometer):
         #    sigma_protein_by_segment.append(1-segment_block)
         return distances_by_segment, sigma_water_by_segment, sigma_protein_by_segment, burial_indicator
 
-
+    def compute_configurational_energies(self):
+        #
+        # STEP 1: COMPUTE INDICATOR FUNCTIONS (THEMSELVES FUNCTIONS OF THE DISTANCE MATRIX AND DENSITIES)
+        #           THIS INCLUDES THE BURIAL INDICATOR FUNCTIONS FOR ALL RESIDUES
+        #           AND THE THETA AND ELECTROSTATICS INDICATOR FUNCTIONS FOR ALL PAIRS SATISFYING  
+        #           (DISTANCE < self.distance_cutoff_contact) AND (DISTANCE > self.min_contact_distance),
+        #           WHICH ARE SELECTED USING THE ATTRIBUTES self.config_indices1 AND self.config_indices2
+        #           (SEE self.calculate_contact_indices() CALLED DURING self.__init__())
+        #  
+        #         NOTE THAT THE USER MAY APPLY A MORE NARROW SELECTION OF PAIRS WHEN WRITING A tcl SCRIPT
+        #           WITH frustration.write_tcl_script() OR WHEN COMPUTING THE STATISTICS OF THE DISTRIBUTION OF FRUSTRATION INDICES 
+        #           IN THE MATRIX OF ALL FRUSTRATION INDICES, RETURNED BY self.frustration() OR self.configurational_frustration()   
+        #       
+        # get distance matrix and amino acid identities
+        _AA='ARNDCQEGHILKMFPSTWYV'
+        seq_index = np.array([_AA.find(aa) for aa in self.sequence]) # this is fine for a multi chain system if sequence and structure are both fixed
+        distances = self.distance_matrix[self.config_indices1, self.config_indices2]  # get distances satisfying minimum threshold
+        # above numpy advanced indexing command equivalent to the below code
+        #foo = []
+        #for index1,index2 in zip(self.config_indices1,self.config_indices2):
+        #    foo.append(self.distance_matrix[index1,index2])
+        #foo = np.array(foo)
+        #assert np.all(foo==distances)
+        #
+        # get density-based quantities rho and sigma
+        # these ultimately are functions of the distance matrix, but we already did part of the calculation somewhere else,
+        # and stored these intermediate values self.rho_r
+        rho_b = np.expand_dims(self.rho_r, 1) #(n,1)
+        rho1 = np.expand_dims(self.rho_r, 0) #(1,n)
+        rho2 = np.expand_dims(self.rho_r, 1) #(n,1)
+        sigma_water = 0.25 * (1 - np.tanh(self.eta_sigma * (rho1 - self.rho_0))) * (1 - np.tanh(self.eta_sigma * (rho2 - self.rho_0))) #(n,n)
+        sigma_protein = 1 - sigma_water #(n,n)
+        # compute indicator functions
+        theta = 0.25 * (1 + np.tanh(self.eta * (distances - self.r_min))) * (1 + np.tanh(self.eta * (self.r_max - distances))) # (c,)
+        thetaII = 0.25 * (1 + np.tanh(self.eta * (distances - self.r_minII))) * (1 + np.tanh(self.eta * (self.r_maxII - distances))) #(c,)
+        burial_indicator = np.tanh(self.burial_kappa * (rho_b - self.burial_ro_min)) + np.tanh(self.burial_kappa * (self.burial_ro_max - rho_b)) #(n,3)  
+        electrostatics_indicator = np.exp(-distances / self.electrostatics_screening_length) / distances
+        #
+        # STEP 2: COMPUTE PAIR ENERGIES (sum of direct, water-mediated, protein-mediated, electrostatics, and burial energies 
+        #                                for all pairs (i,j))
+        #         THE MAIN DIAGONAL OF THE MATRIX configurational_energies DOES NOT ACTUALLY REPRESENT A PAIR OF RESIDUES,
+        #         SO IT IS SET TO 0 WITHOUT CALCULATING ANY ENERGIES. ADDITIONALLY, PAIRS THAT DO NOT SATISFY THE CONTACT
+        #         DISTANCE CONSTRAINTS WILL ALSO HAVE THEIR ENERGIES SET TO 0 INSTEAD OF BEING COMPUTED THE NORMAL WAY
+        #
+        #         IMPLEMENTATION DETAIL: THIS LOOP IGNORES SUCH INVALID PAIRS BECAUSE THEY ARE NOT REPRESENTED IN 
+        #         self.config_indices1 AND self.config_indices2. BECAUSE THE LOOP NEGLECTS TO EVALUATE THE ENERGY OF THESE PAIRS,
+        #         THE INITIAL VALUES OF 0 FROM THE LINE configurational_energies=np.zeros((n,n)) REMAINS
+        configurational_energies=np.zeros(self.distance_matrix.shape)
+        # (self.config_indices1[k],self.config_indices2[k]) gives the kth valid pair (i,j)
+        assert len(self.config_indices1)==len(self.config_indices2), f"indices lengths: {len(self.config_indices1)},{len(self.config_indices2)}" 
+        n_contacts=len(self.config_indices1)
+        for c in range(n_contacts):
+            # get the indices of the residues participating in the selected contact c
+            n1=self.config_indices1[c]
+            n2=self.config_indices2[c]
+            # get the identities and density-based indicators of the residues at the indices participating in the selected contact c
+            q1=seq_index[n1]
+            q2=seq_index[n2]
+            b1 = burial_indicator[n1]
+            b2 = burial_indicator[n2]
+            sw = sigma_water[n1,n2]
+            sp = sigma_protein[n1,n2]
+            # compute burial energy for each residue
+            burial_energy1 = (-0.5 * self.k_contact * self.burial_gamma[q1] * b1).sum(axis=0)
+            burial_energy2 = (-0.5 * self.k_contact * self.burial_gamma[q2] * b2).sum(axis=0)
+            # compute contact energy for the selected contact c
+            direct = theta[c] * self.direct_gamma[q1, q2]
+            water_mediated =  sw * thetaII[c] * self.water_gamma[q1,q2]
+            protein_mediated = sp * thetaII[c] * self.protein_gamma[q1,q2]
+            contact_energy = -self.k_contact * (direct+water_mediated+protein_mediated)
+            # compute the electrostatic energy for the selected contact c
+            charges = np.array([0, 1, 0, -1, 0, 0, -1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0]) # D, E negative; R, K positive; all else neutral
+            electrostatics_energy = self.k_electrostatics * electrostatics_indicator[c]*charges[q1]*charges[q2]
+            # compute the total energy and put it in the appropriate element of the matrix
+            energy=(burial_energy1+burial_energy2+contact_energy+electrostatics_energy)
+            configurational_energies[n1,n2]=energy
+            configurational_energies[n2,n1]=energy
+        # 
+        # return our matrix, which will have some calculated pair energies and some 0s (see STEP 1 and STEP 2 comments)
+        return configurational_energies 
+    """
     def compute_configurational_energies(self):
         # STEP 1: COMPUTE INDICATOR FUNCTIONS (THEMSELVES FUNCTIONS OF THE DISTANCE MATRIX AND DENSITIES)
-        #         AND RECORD WHICH PAIRS ARE DIRECT, WATER-MEDIATED, AND PROTEIN-MEDIATED INTERACTIONS
+        #           THIS INCLUDES THE BURIAL INDICATOR FUNCTIONS FOR ALL RESIDUES,
+        #           THE CONTACT INDICATOR FUNCTIONS FOR ALL PAIRS OF RESIDUES,
+        #           AND THE ELECTROSTATIC INDICATOR FUNCTIONS FOR ALL PAIRS OF RESIDUES
+        #         WE ALSO RECORD WHICH PAIRS ARE DIRECT, WATER-MEDIATED, AND PROTEIN-MEDIATED INTERACTIONS
+        #           AND STORE THEM AS ATTRIBUTES OF self. ARGUABLY, THIS CALCULATION SHOULD BE MOVED TO A DIFFERENT
+        #           FUNCTIONS SO THAT IT CAN BE EASILY CALLED ELSEWHERE 
+        #         NOTE THAT WE CALCULATE THESE INDICATOR FUNCTIONS AND CLASSIFY CONTACTS AS SHORT RANGE
+        #           OR LONG RANGE OR ORPHANS EVEN IF THEY MAY BE EXCLUDED FROM THE FRUSTRATION STATISTICS
+        #           AND THE FRUSTRATOGRAM VISUALIZATION (THE DECISION TO DO SO MUST BE MADE BY THE USER
+        #           BY FILTERING OUT TOO CLOSE CONTACTS FROM frustration_matrix USING self.config_indices1, ETC.
+        #           SEE DOCUMENTATION OF frustration.write_tcl_script FOR MORE INFORMATION)
 
         # get distance matrix
         _AA='ARNDCQEGHILKMFPSTWYV'
         seq_index = np.array([_AA.find(aa) for aa in self.sequence]) # this is fine for a multi chain system if sequence and structure are both fixed
-        #distances = np.triu(self.distance_matrix)
-        distances_indices = np.triu_indices(self.distance_matrix.shape[0], k=2) # IMPORTANT CHANGE TO MAKE IT MORE LIKE THE TCL SCRIPT!!!
+        # we'll construct our distribution of native distances only from those satisfying min_sequence_separation_contact/min seq sep frustration index
+        # self.sequence_cutoff should be equal to min seq sep contact which should be equal to min seq sep electrostatics
+        distances_indices = np.triu_indices(self.distance_matrix.shape[0], k=self.sequence_cutoff) 
         triu_mask = np.zeros(self.distance_matrix.shape,dtype=np.bool_)
         triu_mask[distances_indices] = True
         for index,bit in enumerate(self.start_mask):
-            if bit==1 and index!=0: # if index is 0, then index-1 is -1, and we don't want to set that to 1
-                assert triu_mask[index,index-1] == 0
-                assert triu_mask[index-1,index] == 0
-                triu_mask[index,index-1] == 1 # pairs crossing chains should be considered, even if they're nearest neighbors in sequence
-                triu_mask[index-1,index] == 1 # pairs crossing chains should be considered, even if they're nearest neighbors in sequence
+            if bit==1 and index!=0: # if index is 0, then index-1 is -1, index-2 is -2, etc., and we don't want to set that to 1
+                # pairs crossing chains should be considered, even if they're close in sequence
+                # number+/-self.sequence_cutoff is the first to be considered (difference>=/=<self.sequence_cutoff)
+                # so we use index-self.sequence_cutoff+1==index-(self.sequence_cutoff-1)
+                assert np.all(triu_mask[index,index-self.sequence_cutoff+1:index] == np.array([0 for _ in range(self.sequence_cutoff)])), triu_mask[index,index-self.sequence_cutoff+1:index]
+                assert np.all(triu_mask[index-self.sequence_cutoff+1:index,index] == np.array([0 for _ in range(self.sequence_cutoff)])), triu_mask[index-self.sequence_cutoff+1:index,index]
+                triu_mask[index,index-self.sequence_cutoff+1:index] = 1 
+                triu_mask[index-self.sequence_cutoff+1:index,index] = 1 
         distances = self.distance_matrix * triu_mask
-        distances = distances[(distances<self.distance_cutoff_contact) & (distances>0) & (distances>self.min_contact_distance)] # use 3.5 TO MAKE IT MORE LIKE THE TCL SCRIPT!!!
+        # some distance_matrix elements will now be 0 because of our triu_mask filtering of too-close-in-sequence contacts,
+        # so we explicitly put (distances>0) on the following line of code to remind ourselves of this fact.
+        #
+        # in addition to overly short sequence separations, we want to filter out contacts whose distances don't fall within our range
+        # 
+        distances = distances[(distances<self.distance_cutoff_contact) & (distances>0) & (distances>self.min_contact_distance)] 
 
         # get density-based quantities rho and sigma
         # these ultimately are functions of the distance matrix, but we already did part of the calculation somewhere else,
@@ -497,15 +655,19 @@ class AWSEM(Frustratometer):
         theta = 0.25 * (1 + np.tanh(self.eta * (distances - self.r_min))) * (1 + np.tanh(self.eta * (self.r_max - distances))) # (c,)
         thetaII = 0.25 * (1 + np.tanh(self.eta * (distances - self.r_minII))) * (1 + np.tanh(self.eta * (self.r_maxII - distances))) #(c,)
         burial_indicator = np.tanh(self.burial_kappa * (rho_b - self.burial_ro_min)) + np.tanh(self.burial_kappa * (self.burial_ro_max - rho_b)) #(n,3)  
-        charges = np.array([0, 1, 0, -1, 0, 0, -1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0])
         electrostatics_indicator = np.exp(-distances / self.electrostatics_screening_length) / distances
 
         # record pairs (i,j) corresponding to direct, water mediated, and protein mediated interactions
-        n = self.distance_matrix.shape[0]  # Assuming self.distance_matrix is defined and square
-        #tri_upper_indices = np.triu_indices(n, k=1)  # k=1 excludes the diagonal
-        tri_upper_indices = np.triu_indices(n, k=10)  # k=10 excludes up to and including |i-j|=9
+        # assuming with our selections that the user hasn't done something silly 
+        # like setting self.distance_cutoff_contact to something less than 9.5
+        # or setting self.min_contact_distance to something greater than 4.5
+        assert self.distance_matrix.shape[0] == self.distance_matrix.shape[1], f"self.distance_matrix (shape {self.distance_matrix.shape}) not square!"
+        n = self.distance_matrix.shape[0]
+        assert np.all(self.distance_matrix==self.distance_matrix.T), "self.distance_matrix was not symmetric!"
+        assert np.all(self.distance_matrix[np.diag_indices(n)] == 0), "main diagonal of self.distance_matrix has nonzero element(s)!"
+        tri_upper_indices = np.triu_indices(n, k=1)  # k=1 excludes the main diagonal, which represents self-distances
         valid_pairs = (self.distance_matrix[tri_upper_indices] < self.distance_cutoff_contact)\
-                      & (self.distance_matrix[tri_upper_indices] > self.min_contact_distance) ######################3 IMPORTANT CHANGE TO MAKE IT MORE LIKE THE TCL SCRIPT!!!!!!!1
+                      & (self.distance_matrix[tri_upper_indices] > self.min_contact_distance)
         valid_pairs_direct = (self.distance_matrix[tri_upper_indices] < 6.5)\
                       & (self.distance_matrix[tri_upper_indices] >= 4.5)
         valid_pairs_long = (self.distance_matrix[tri_upper_indices] <= 9.5)\
@@ -513,10 +675,14 @@ class AWSEM(Frustratometer):
         valid_pairs_orphan = (self.distance_matrix[tri_upper_indices] < 4.5)\
             & (self.distance_matrix[tri_upper_indices] > self.min_contact_distance) 
             # finally, select pairs whose frustration indices are considered but do not fall into short or long-range interactions
+        valid_pairs_orphan_long = (self.distance_matrix[tri_upper_indices] > 9.5)\
+            & (self.distance_matrix[tri_upper_indices] < self.distance_cutoff_contact) 
+            # finally, select pairs whose frustration indices are considered but do not fall into short or long-range interactions
         indices1,indices2 = (tri_upper_indices[0][valid_pairs], tri_upper_indices[1][valid_pairs])
         direct_indices1,direct_indices2 = (tri_upper_indices[0][valid_pairs_direct], tri_upper_indices[1][valid_pairs_direct])
         long_indices1, long_indices2 = (tri_upper_indices[0][valid_pairs_long], tri_upper_indices[1][valid_pairs_long])
         orphan_indices1, orphan_indices2 = (tri_upper_indices[0][valid_pairs_orphan], tri_upper_indices[1][valid_pairs_orphan])
+        orphan_long_indices1, orphan_long_indices2 = (tri_upper_indices[0][valid_pairs_orphan_long], tri_upper_indices[1][valid_pairs_orphan_long])
         wat_indices1 = []
         wat_indices2 = []
         prot_indices1 = []
@@ -538,6 +704,8 @@ class AWSEM(Frustratometer):
         self.prot_indices2 = prot_indices2
         self.orphan_indices1 = orphan_indices1
         self.orphan_indices2 = orphan_indices2
+        self.orphan_long_indices1 = orphan_long_indices1
+        self.orphan_long_indices2 = orphan_long_indices2 
 
         # STEP 2: COMPUTE PAIR ENERGIES (sum of direct, water-mediated, protein-mediated, electrostatics, and burial energies 
         #                                for all pairs (i,j))
@@ -558,6 +726,7 @@ class AWSEM(Frustratometer):
             water_mediated = sigma_water[n1,n2] * thetaII[c] * self.water_gamma[q1,q2]
             protein_mediated = sigma_protein[n1,n2] * thetaII[c] * self.protein_gamma[q1,q2]
             contact_energy = -self.k_contact * (direct+water_mediated+protein_mediated)
+            charges = np.array([0, 1, 0, -1, 0, 0, -1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0]) # D, E negative; R, K positive; all else neutral
             electrostatics_energy = self.k_electrostatics * electrostatics_indicator[c]*charges[q1]*charges[q2]
 
             energy=(burial_energy1+burial_energy2+contact_energy+electrostatics_energy)
@@ -565,9 +734,9 @@ class AWSEM(Frustratometer):
             configurational_energies[n2,n1]=energy
 
         return configurational_energies 
-    
+    """
     def configurational_frustration(self,aa_freq=None, correction=0, n_decoys=4000):
-        mean_decoy_energy, std_decoy_energy = self.compute_configurational_decoy_statistics(n_decoys=n_decoys,aa_freq=aa_freq)
+        mean_decoy_energy, std_decoy_energy = self.compute_configurational_decoy_statistics(n_decoys=n_decoys,aa_freq=aa_freq,)
         assert len(mean_decoy_energy.shape)==1, mean_decoy_energy
         assert len(std_decoy_energy.shape)==1, std_decoy_energy
         assert mean_decoy_energy.shape == std_decoy_energy.shape, (mean_decoy_energy.shape,std_decoy_energy.shape)
