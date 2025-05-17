@@ -1271,9 +1271,9 @@ def write_tcl_script_v2(pdb_file: Union[Path,str], chain: str, solid_mask: np.ar
 
     # draw lines
     fo.write('draw color green\n')
-    draw_write_loop(minimally_frustrated, selection, fo)
+    draw_write_loop(minimally_frustrated, fo)
     fo.write("draw color red\n")
-    draw_write_loop(highly_frustrated, selection, fo)
+    draw_write_loop(highly_frustrated, fo)
     
     # boilerplate
     fo.write('''mol delrep top 0
@@ -1348,7 +1348,7 @@ def write_tcl_script_v2(pdb_file: Union[Path,str], chain: str, solid_mask: np.ar
     return tcl_script
 
 
-def draw_write_loop(frustration_info, prody_structure_selection, fo):
+def draw_write_loop(frustration_info, fo):
     """
     Just moving some code that gets called twice outside of write_tcl_script_v2
     """
@@ -1367,10 +1367,8 @@ def draw_write_loop(frustration_info, prody_structure_selection, fo):
             raise AssertionError(f"logical issue with if-elif-else block! solid_bool: {solid_bool}, dashed_bool: {dashed_bool}")
         r1=int(r1)
         r2=int(r2)
-        pos1 = prody_structure_selection.select(f'resindex {r1} and (name CB or (resname GLY and name CA))').getCoords()[0] # chain is unnecessary because resindex is unique
-        pos2 = prody_structure_selection.select(f'resindex {r2} and (name CB or (resname GLY and name CA))').getCoords()[0] # chain is unnecessary because resindex is unique
-        fo.write(f'lassign [[atomselect top "residue {r1} and name CA"] get {{x y z}}] pos1\n') # chain is unnecessary because resindex is unique
-        fo.write(f'lassign [[atomselect top "residue {r2} and name CA"] get {{x y z}}] pos2\n') # chain is unnecessary because resindex is unique
+        fo.write(f'lassign [[atomselect top "residue {r1} and name CA"] get {{x y z}}] pos1\n') # chain is unnecessary because residue is unique
+        fo.write(f'lassign [[atomselect top "residue {r2} and name CA"] get {{x y z}}] pos2\n') # chain is unnecessary because residue is unique
         fo.write(f'draw line $pos1 $pos2 style {line_style} width 2\n')
 
 
