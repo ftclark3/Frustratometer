@@ -1158,9 +1158,9 @@ def write_tcl_script(pdb_file: Union[Path,str], chain: str, mask: np.array, dist
     return tcl_script
 
 def write_tcl_script_v2(pdb_file: Union[Path,str], chain: str, solid_mask: np.array, dashed_mask: np.array,
-                    distance_matrix: np.array, distance_cutoff: float, single_frustration: np.array,
-                    pair_frustration: np.array, tcl_script: Union[Path, str] ='frustration.tcl',max_connections: int =None, movie_name: Union[Path, str] =None, still_image_name: Union[Path, str] =None,
-                    min_contact_distance=3.5) -> Union[Path, str]:
+                   single_frustration: np.array, pair_frustration: np.array, 
+                   tcl_script: Union[Path, str] ='frustration.tcl', movie_name: Union[Path, str] =None, still_image_name: Union[Path, str] =None,
+                   ) -> Union[Path, str]:
     """
     Writes a tcl script that can be run with VMD to superimpose the frustration patterns onto the corresponding PDB structure. 
 
@@ -1257,7 +1257,6 @@ def write_tcl_script_v2(pdb_file: Union[Path,str], chain: str, solid_mask: np.ar
         print(r1.shape)
         print(r2.shape)
         print(pair_frustration.shape)
-        print(distance_matrix.shape)
         print(solid_mask.shape)
         print(dashed_mask.shape)
         raise
