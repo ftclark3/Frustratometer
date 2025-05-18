@@ -1217,9 +1217,17 @@ def write_tcl_script_v2(pdb_file: Union[Path,str], chain: str, solid_mask: np.ar
     if not dashed_mask.shape == solid_mask.shape:
         raise ValueError(f"dashed_mask (shape {dashed_mask.shape}) and solid_mask (shape {solid_mask.shape}) must have the same shape")
     if not np.all(solid_mask==solid_mask.T):
-        raise ValueError("solid_mask was not symmetric")
+        solid_mask += solid_mask.T
+        if np.max(solid_mask) > 1:
+            raise ValueError("solid_mask was not symmetric")
+        else: # we probably just filled in upper or lower triangle but not both
+            pass
     if not np.all(dashed_mask==dashed_mask.T):
-        raise ValueError("dashed_mask was not symmetric")
+        dashed_mask += dashed_mask.T
+        if np.max(dashed_mask) > 1:
+            raise ValueError("dashed_mask was not symmetric")
+        else: # we probably just filled in upper or lower triangle but not both
+            pass
     if np.max(solid_mask+dashed_mask) > 1:
         raise ValueError(f"found one or more index where both solid_mask and dashed_mask were nonzero!\
             We can't draw both a solid and a dashed line between the same two residues.")
