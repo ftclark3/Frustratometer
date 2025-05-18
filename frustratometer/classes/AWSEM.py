@@ -13,6 +13,7 @@ class AWSEMParameters(BaseModel):
     model_config = ConfigDict(extra='ignore', arbitrary_types_allowed=True)
     """Default parameters for AWSEM energy calculations."""
     k_contact: float = Field(4.184, description="Coefficient for contact potential. (kJ/mol)")
+    k_burial: float = Field(4.184, description="Coefficient for burial potential. Usually the same as for contact. (kJ/mol)")
     
     #Density
     eta: float = Field(5.0, description="Sharpness of the distance-based switching function (Angstrom^-1).")
@@ -201,7 +202,7 @@ class AWSEM(Frustratometer):
             self.gamma_array=[]
             temp_burial_gamma=self.burial_gamma[self.aa_map_awsem_list]
             temp_burial_gamma[0]=0
-            temp_burial_gamma *= -0.5 * p.k_contact
+            temp_burial_gamma *= -0.5 * p.k_burial
             self.gamma_array.append(temp_burial_gamma[:,0])
             self.gamma_array.append(temp_burial_gamma[:,1])
             self.gamma_array.append(temp_burial_gamma[:,2])
@@ -223,7 +224,7 @@ class AWSEM(Frustratometer):
         h_index = np.meshgrid(range(self.N), range(self.q), indexing='ij', sparse=False)
 
         #Burial energy
-        burial_energy = 0.5 * p.k_contact * self.burial_gamma[h_index[1]] * burial_indicator[:, np.newaxis, :]
+        burial_energy = 0.5 * p.k_burial * self.burial_gamma[h_index[1]] * burial_indicator[:, np.newaxis, :]
         self.burial_energy = burial_energy
 
         #Contact energy
@@ -466,8 +467,8 @@ class AWSEM(Frustratometer):
                     raise
                 q2=segment_seq_index[qi2] # pick the identity of the other random residue
                 try:
-                    burial_energy1 = (-0.5 * self.k_contact * self.burial_gamma[q1] * segment_burial_indicator[n1]).sum(axis=0)
-                    burial_energy2 = (-0.5 * self.k_contact * self.burial_gamma[q2] * segment_burial_indicator[n2]).sum(axis=0)
+                    burial_energy1 = (-0.5 * self.k_burial * self.burial_gamma[q1] * segment_burial_indicator[n1]).sum(axis=0)
+                    burial_energy2 = (-0.5 * self.k_burial * self.burial_gamma[q2] * segment_burial_indicator[n2]).sum(axis=0)
                 except IndexError as e:
                     #import pdb; pdb.set_trace()
                     print("indexing issue burial_energy1 burial_energy2")
@@ -586,8 +587,8 @@ class AWSEM(Frustratometer):
             sw = sigma_water[n1,n2]
             sp = sigma_protein[n1,n2]
             # compute burial energy for each residue
-            burial_energy1 = (-0.5 * self.k_contact * self.burial_gamma[q1] * b1).sum(axis=0)
-            burial_energy2 = (-0.5 * self.k_contact * self.burial_gamma[q2] * b2).sum(axis=0)
+            burial_energy1 = (-0.5 * self.k_burial * self.burial_gamma[q1] * b1).sum(axis=0)
+            burial_energy2 = (-0.5 * self.k_burial * self.burial_gamma[q2] * b2).sum(axis=0)
             # compute contact energy for the selected contact c
             direct = theta[c] * self.direct_gamma[q1, q2]
             water_mediated =  sw * thetaII[c] * self.water_gamma[q1,q2]
