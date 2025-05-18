@@ -14,7 +14,7 @@ residue_names=[]
 class Structure:
 
     def __init__(self, pdb_file: Union[Path,str], chain: Union[str,None]=None, seq_selection: str = None, aligned_sequence: str = None, filtered_aligned_sequence: str = None,
-                distance_matrix_method:str = 'CB', pdb_directory: Path = Path.cwd(), repair_pdb:bool = True)->object:
+                distance_matrix_method:str = 'CB', pdb_directory: Path = Path.cwd(), repair_pdb:bool = True, return_distance_midpoints:bool = False)->object:
         
         """
         Generates structure object. Both PDB and CIF format files are accepted as input.
@@ -54,6 +54,11 @@ class Structure:
         repair_pdb: bool
             If True, provided pdb file will be repaired with missing residues inserted and heteroatoms removed.
             Note that a pdb file will be produced, regardless of input file format.
+
+        return_distance_midpoints: bool
+            Whether to return a matrix of the same shape as distance_matrix representing the same contacts as distance_matrix
+            that indicates the absolute coordinates of the midpoint between the pair of atoms. This helps us compute the pair distribution
+            functions of the different classes of contacts. So this matrix isn't really a matrix because each "element" has 3 channels: x, y, and z
 
         Returns
         -------
@@ -152,8 +157,16 @@ class Structure:
                 self.structure=prody.parseMMCIF(str(self.pdb_file),chain=self.chain).select(f"protein and {self.seq_selection}")
 
         self.sequence, self.start_mask = pdb.get_sequence(self.pdb_file,self.chain,return_start_mask=True) # this function can now accept chain as list or string
-        self.distance_matrix=pdb.get_distance_matrix(pdb_file=self.pdb_file,chain=self.chain, # for this function, chain should be a string containing the chain ids                                     
-                                                     method=self.distance_matrix_method)      # separated by a space, like "A B"
+        if return_distance_midpoints:
+            self.distance_matrix, self.midpoint_matrix = pdb.get_distance_matrix(pdb_file=self.pdb_file,chain=self.chain, # for this function, chain should be a string containing the chain ids                                     
+                                                                                 method=self.distance_matrix_method,      # separated by a space, like "A B"
+                                                                                 return_distance_midpoints=True)
+        else:
+            self.distance_matrix=pdb.get_distance_matrix(pdb_file=self.pdb_file,chain=self.chain, # for this function, chain should be a string containing the chain ids                                     
+                                                     method=self.distance_matrix_method,      # separated by a space, like "A B"
+                                                    return_distance_midpoints=False)            
+            self.midpoint_matrix = None
+    
         self.full_pdb_distance_matrix=self.distance_matrix
 
         self.z_coordinates=self.structure.select('((name CB) or (resname GLY and name CA))').getCoords()

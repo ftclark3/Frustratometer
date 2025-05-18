@@ -131,6 +131,7 @@ class AWSEM(Frustratometer):
         self.pdb_file=pdb_structure.pdb_file
         self.init_index_shift=pdb_structure.init_index_shift
         self.distance_matrix=pdb_structure.distance_matrix
+        self.midpoint_matrix = pdb_structure.midpoint_matrix
         self.full_pdb_distance_matrix=pdb_structure.full_pdb_distance_matrix
         selection_CB = self.structure.select('name CB or (resname GLY IGL and name CA)')
 

@@ -116,7 +116,8 @@ def get_sequence(pdb_file: str,
 
 def get_distance_matrix(pdb_file: Union[Path,str],
                         chain: str,
-                        method: str = 'CB'
+                        method: str = 'CB',
+                        return_distance_midpoints: bool = False,
                         ) -> np.array:
     """
     Calculate the distance matrix of the specified atoms in a PDB file.
@@ -134,6 +135,10 @@ def get_distance_matrix(pdb_file: Union[Path,str],
             'CA' for using only the CA atom,
             'minimum' for using the minimum distance between all atoms in each residue,
             'CB_force' computes a new coordinate for the CB atom based on the CA, C, and N atoms and uses CB distance even for glycine.
+    return_distance_midpoints: bool
+        Whether to return a matrix of the same shape as distance_matrix representing the same contacts as distance_matrix
+        that indicates the absolute coordinates of the midpoint between the pair of atoms. This helps us compute the pair distribution
+        functions of the different classes of contacts. So this matrix isn't really a matrix because each "element" has 3 channels: x, y, and z
 
     Returns:
         np.array: The distance matrix of the selected atoms.
@@ -191,8 +196,20 @@ def get_distance_matrix(pdb_file: Union[Path,str],
     if len(coords) == 0:
         raise IndexError('Empty selection for distance map')
 
+    # coords should be a numpy array of shape (N,3)
     distance_matrix = sdist.squareform(sdist.pdist(coords))
-    return distance_matrix
+    assert distance_matrix.shape[0] == distance_matrix.shape[1]
+    if return_distance_midpoints:
+        midpoint_matrix = np.zeros((distance_matrix.shape[0],distance_matrix.shape[1],3))
+        for i in range(distance_matrix.shape[0]):
+            for j in range(distance_matrix.shape[1]):
+                midpoint_matrix[i,j,:] = (coords[None,i,:] + coords[None,j,:])/2
+                # check that indexing is consistent with distance_matrix
+                assert np.allclose(np.linalg.norm(coords[i,:]-coords[j,:]),distance_matrix[i,j])
+        assert np.allclose(midpoint_matrix,midpoint_matrix.transpose(1,0,2)) # check symmetry
+        return distance_matrix, midpoint_matrix
+    else:    
+        return distance_matrix
 
 
 def full_to_filtered_aligned_mapping(aligned_sequence: str,
