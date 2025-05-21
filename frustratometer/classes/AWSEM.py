@@ -61,6 +61,7 @@ class AWSEM(Frustratometer):
                  sequence: str =None,
                  expose_indicator_functions: bool=False,
                  stats_by_chain: bool=False,
+                 amyloid_rho2: bool=False,
                  **parameters)->object:
         """
         Generate AWSEM object
@@ -77,11 +78,15 @@ class AWSEM(Frustratometer):
             If set to True, aa_freq, distance distributions, and local density distributions will be
             calculated separately for each chain, potentially resulting in a different misfolded mean and variance
             for each chains
+        amyloid_rho2: bool
+            If True, add 2 to each local density in self.rho_r to approximate the effects of a fibril above and below it
         
         Returns
         -------
         AWSEM object
         """
+
+        self.amyloid_rho2 = amyloid_rho2
 
         #Set attributes
         p = AWSEMParameters(**parameters)
@@ -165,7 +170,10 @@ class AWSEM(Frustratometer):
         self.rho=rho
         
         #Calculate sigma water and sigma_protein
-        rho_r = (rho).sum(axis=1)
+        if self.amyloid_rho2:
+            rho_r = (rho).sum(axis=1) + 2
+        else:
+            rho_r = (rho).sum(axis=1)
         if self.full_pdb_distance_matrix.shape!=self.distance_matrix.shape:
             if self.burial_in_context==True:
                 self.init_index_shift=pdb_structure.init_index_shift
