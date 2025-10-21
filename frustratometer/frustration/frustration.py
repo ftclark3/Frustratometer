@@ -1,13 +1,14 @@
 import prody
 import scipy.spatial.distance as sdist
 import numpy as np
-import typing
+from typing import Union
+from pathlib import Path
 
 _AA = '-ACDEFGHIKLMNPQRSTVWY'
 
 def compute_mask(distance_matrix: np.array,
-                 maximum_contact_distance: typing.Union[float, None] = None,
-                 minimum_sequence_separation: typing.Union[int, None] = None) -> np.array:
+                 maximum_contact_distance: Union[float, None] = None,
+                 minimum_sequence_separation: Union[int, None] = None) -> np.array:
     """
     Computes a 2D Boolean mask from a given distance matrix based on a distance cutoff and a sequence separation cutoff.
 
@@ -685,7 +686,7 @@ def compute_single_frustration(decoy_fluctuation,
 
 
 def compute_pair_frustration(decoy_fluctuation,
-                             contact_freq: typing.Union[None, np.array],
+                             contact_freq: Union[None, np.array],
                              correction=0) -> np.array:
     """
     Calculates pair residue frustration indices
@@ -854,7 +855,42 @@ def plot_singleresidue_decoy_energy(decoy_energy, native_energy, method='cluster
 
 
 def write_tcl_script(pdb_file, chain, mask, distance_matrix, distance_cutoff, single_frustration, pair_frustration, tcl_script='frustration.tcl',
-                     max_connections=None, movie_name=None, still_image_name=None, hide_cartoon=False, min_draw_cutoff=1):
+                     max_connections=None, movie_name=None, still_image_name=None, hide_cartoon=False, min_draw_cutoff=1) -> Union[Path, str]:
+    """
+    Writes a tcl script that can be run with VMD to superimpose the frustration patterns onto the corresponding PDB structure. 
+
+    Parameters
+    ----------
+    pdb_file :  Path or str
+        pdb file name
+    chain : str
+        Select chain from pdb
+    mask : np.array
+        A 2D Boolean array that determines which residue pairs should be considered in the energy computation. The mask should have dimensions (L, L), where L is the length of the sequence.
+    distance_matrix : np.array
+        LxL array for sequence of length L, describing distances between contacts
+    distance_cutoff : float
+        Maximum distance at which a contact occurs
+    single_frustration : np.array
+        Array containing single residue frustration index values
+    pair_frustration : np.array
+        Array containing pair (ex. configurational, mutational, contact) frustration index values
+    tcl_script : Path or str
+        Output tcl script file with static structure
+    max_connections : int
+        Maximum number of pair frustration values visualized in tcl file
+    movie_name : Path or str
+        Output movie file with rotating structure
+    still_image_name : Path or str
+        Output image file with still image
+    
+
+    Returns
+    -------
+    tcl_script : Path or str
+        tcl script file
+    """
+
     fo = open(tcl_script, 'w+')
     single_frustration = np.nan_to_num(single_frustration,nan=0,posinf=0,neginf=0)
     pair_frustration = np.nan_to_num(pair_frustration,nan=0,posinf=0,neginf=0)
@@ -1011,7 +1047,17 @@ def write_tcl_script(pdb_file, chain, mask, distance_matrix, distance_cutoff, si
     return tcl_script
 
 
-def call_vmd(pdb_file, tcl_script):
+def call_vmd(pdb_file: Union[Path,str], tcl_script: Union[Path,str]):
+    """
+    Calls VMD program with given pdb file and tcl script to visualize frustration patterns
+
+    Parameters
+    ----------
+    pdb_file :  Path or str
+        pdb file name
+    tcl_script : Path or str
+        Output tcl script file with static structure
+    """
     import subprocess
     return subprocess.Popen(['vmd', '-e', tcl_script, pdb_file], stdin=subprocess.PIPE)
 
@@ -1039,3 +1085,506 @@ def canvas(with_attribution=True):
     return quote
 
 
+###
+
+def make_decoy_seqs(seq, ndecoys=1000):
+    """
+    Creates permutated, decoy sequences using a given sequence residue composition and length.
+    
+    Parameters
+    ----------
+    seq : str
+        The amino acid sequence of the protein. The sequence is assumed to be in one-letter code. Gaps are represented as '-'. The length of the sequence (L) should match the dimensions of the Potts model.
+    n_decoys: int
+        Number of sequence decoys to create
+    
+    Return
+    -------
+    decoy_seqs : list
+        List of decoy sequences. The sequences are assumed to be in one-letter code. Gaps are represented as '-'. The length of the sequences (L) should match the dimensions of the Potts model.
+    """
+    
+    seq_array = np.array(list(seq))
+    decoy_seqs = [''.join(np.random.permutation(seq_array)) for _ in range(ndecoys)]
+    return decoy_seqs
+
+
+def compute_fragment_mask(mask: np.array,
+                  fragment_pos: np.array)-> np.array:
+    """
+    Creates a mask for a sequence fragment such that:
+    - position i belongs to the fragment, all j
+    - position j belongs to the fragment, all i
+    
+    The new mask consider all the interactions within the fragment and also the interactions between the fragment and other sequence positions.
+    
+    Parameters
+    ----------
+    
+    mask : np.array
+       A 2D Boolean array that determines which residue pairs should be considered in the energy computation. The mask should have dimensions (L, L), where L is the length of the sequence.
+   fragment_pos: np:array
+        Array of sequence positions selected. 
+        
+    Return
+    -------
+    fragment_mask: np.array
+        New 2D Boolean array that determines which residue pairs should be considered in the energy computation. The mask should have dimensions (L, L), where L is the length of the sequence.
+    """
+
+    custom_mask=np.zeros((mask.shape[0],mask.shape[0]),dtype=bool)
+    custom_mask[fragment_pos]=True
+    custom_mask[:,fragment_pos]=True
+    fragment_mask = custom_mask*mask
+    return fragment_mask
+
+
+
+def compute_fragment_total_native_energy(seq: str,
+                                         potts_model: dict,
+                                         mask: np.array,
+                                         fragment_pos : Union[None, np.array] = None,
+                                         fragment_in_context = False ) -> float:
+    
+    """
+    Calculates the energy for the complete protein or for a fragment in context
+
+    Parameters
+    ----------
+    seq : str
+        The amino acid sequence of the protein. The sequence is assumed to be in one-letter code. Gaps are represented as '-'. The length of the sequence (L) should match the dimensions of the Potts model.
+    potts_model : dict
+        A dictionary containing the Potts model parameters 'h' (fields) and 'J' (couplings). The fields are a 2D array of shape (L, 20), where L is the length of the sequence and 20 is the number of amino acids. The couplings are a 4D array of shape (L, L, 20, 20). The fields and couplings are assumed to be in units of energy.
+    mask : np.array
+        A 2D Boolean array that determines which residue pairs should be considered in the energy computation. The mask should have dimensions (L, L), where L is the length of the sequence.
+   fragment_pos: np:array
+        Array of sequence positions selected.
+   fragment_in_context: bool
+        If True, the energetics calculations take into account the interactions between the fragment and other sequence positions
+    
+    Return
+    -------
+    energy: float
+        Native energy of the protein 
+    """   
+    
+    
+    seq_index = np.array([_AA.find(aa) for aa in seq])
+    seq_len = len(seq_index)
+
+    pos1, pos2 = np.meshgrid(np.arange(seq_len), np.arange(seq_len), indexing='ij', sparse=True)
+    aa1, aa2 = np.meshgrid(seq_index, seq_index, indexing='ij', sparse=True)
+    if len(potts_model['J'].shape)==4:
+      #  print('potts')
+        h = -potts_model['h'][range(seq_len), seq_index]
+        j = -potts_model['J'][pos1, pos2, aa1, aa2]
+    else:
+        #MJ 
+       # print('MJ')
+        h = 0
+        j = -potts_model['J'][aa1, aa2]
+    
+    if fragment_in_context:
+        h_mask=np.zeros(seq_len,dtype=int)    
+        h_mask[fragment_pos]=1
+        j_mask=compute_fragment_mask(mask,fragment_pos)
+    else:
+        h_mask = 1
+        j_mask = 1
+    
+    h_prime= h*h_mask
+    j_prime = j * j_mask
+
+    energy = h_prime.sum() + j_prime.sum() / 2
+    return energy
+
+def compute_fragment_total_decoy_energy(decoy_seqs: list,
+                                        potts_model: dict,
+                                        mask: np.array,
+                                        fragment_pos : Union[None, np.array] = None,
+                                        fragment_in_context = False, 
+                                        split_couplings_and_fields = False,
+                                        config_decoys = False,
+                                        msa_mask = 1) -> np.array:
+    """
+    Calculates decoy energies for the complete protein or for a fragment in context
+
+    Parameters
+    ----------
+    decoy_seqs : list
+        List of decoy sequences. The sequences are assumed to be in one-letter code. Gaps are represented as '-'. The length of the sequences (L) should match the dimensions of the Potts model.
+    potts_model : dict
+        A dictionary containing the Potts model parameters 'h' (fields) and 'J' (couplings). The fields are a 2D array of shape (L, 20), where L is the length of the sequence and 20 is the number of amino acids. The couplings are a 4D array of shape (L, L, 20, 20). The fields and couplings are assumed to be in units of energy.
+    mask : np.array
+        A 2D Boolean array that determines which residue pairs should be considered in the energy computation. The mask should have dimensions (L, L), where L is the length of the sequence.
+   fragment_pos: np:array
+        Array of sequence positions selected.
+   fragment_in_context: bool
+        If True, the energetics calculations take into account the interactions between the fragment and other sequence positions
+    split_couplings_and_fields: bool
+        Separate output into coupling and local fields contribution to energy.
+    config_decoys: bool
+        If True, use the configurational decoys approximation, shuffling index positions for configurational decoys energy calculation. If False, mutational decoys.
+    msa_mask: np.array
+        Extra mask to use a Multiple Sequence Alignment that do not cover completely the reference PDB
+    
+    Return
+    -------
+    energy: np.array
+        Decoy energies
+    """   
+    
+    seq_index = np.array([[_AA.find(aa) for aa in seq] for seq in decoy_seqs])
+    N_seqs, seq_len = seq_index.shape
+    pos_index=np.repeat([np.arange(seq_len)], N_seqs,axis=0)
+    
+    if config_decoys:
+
+        pos_index=np.array([np.random.choice(pos_index[0],
+                                             size=len(pos_index[0]),
+                                             replace=False) for x in range(pos_index.shape[0])])
+        mask=np.ones(mask.shape)*mask.mean()
+
+    mask=mask*msa_mask    
+       
+    pos1=np.array([np.meshgrid(p, p, indexing='ij', sparse=True)[0] for p in pos_index])
+    pos2=np.array([np.meshgrid(p, p, indexing='ij', sparse=True)[1] for p in pos_index])
+    aa1=np.array([np.meshgrid(s, s, indexing='ij', sparse=True)[0] for s in seq_index])
+    aa2=np.array([np.meshgrid(s, s, indexing='ij', sparse=True)[1] for s in seq_index])
+    if len(potts_model['J'].shape)==4:
+        h = -potts_model['h'][pos_index,seq_index]
+        j = -potts_model['J'][pos1, pos2, aa1, aa2]
+    else:
+        #MJ 
+        h = 0
+        j = -potts_model['J'][aa1, aa2]
+    
+    if fragment_in_context:
+        h_mask=np.zeros(seq_len,dtype=int)    
+        h_mask[fragment_pos]=1
+        j_mask=compute_fragment_mask(mask,fragment_pos)
+    else:
+        h_mask = 1
+        j_mask = 1
+        
+    h_prime= h*h_mask
+    j_prime = j * j_mask  
+    
+    if split_couplings_and_fields:
+        return np.array([h_prime.sum(axis=-1),j_prime.sum(axis=-1).sum(axis=-1) / 2])
+    else:
+        energy = h_prime.sum(axis=-1) + j_prime.sum(axis=-1).sum(axis=-1) / 2
+        return energy
+    
+    
+def compute_total_frustration(seq,
+                              potts_model,
+                              mask, 
+                              ndecoys = 1000,
+                              config_decoys = False,
+                              msa_mask = 1,
+                              fragment_pos = None,
+                              fragment_in_context = False,
+                              output_kind = 'frustration'):
+    """
+    Calculates the total frustration of a protein fragment.
+
+    Parameters
+    ----------
+    seq : str
+        The amino acid sequence of the protein. The sequence is assumed to be in one-letter code. Gaps are represented as '-'. The length of the sequence (L) should match the dimensions of the Potts model.
+    potts_model : dict
+        A dictionary containing the Potts model parameters 'h' (fields) and 'J' (couplings). The fields are a 2D array of shape (L, 20), where L is the length of the sequence and 20 is the number of amino acids. The couplings are a 4D array of shape (L, L, 20, 20). The fields and couplings are assumed to be in units of energy.
+    mask : np.array
+        A 2D Boolean array that determines which residue pairs should be considered in the energy computation. The mask should have dimensions (L, L), where L is the length of the sequence.
+    n_decoys: int
+        Number of sequence decoys to create
+    config_decoys: bool
+        If True, use the configurational decoys approximation, shuffling index positions for configurational decoys energy calculation. If False, mutational decoys.
+    msa_mask: np.array
+        Extra mask to use a Multiple Sequence Alignment that do not cover completely the reference PDB
+    fragment_pos: np.array
+        Fragment positions. If None, use the complete model
+    fragment_in_context: bool
+        If True, the energetics calculations take into account the interactions between the fragment and other sequence positions
+    output_kind: str
+        If 'frustration', returns frustration. If not, returns native energy, decoy energy average and decoy energy standard deviation.
+    Return
+    -------
+    total_frustration : float
+        Total frustration of the fragment or complete protein
+    native_energy: float
+        Native energy of the given sequence
+    decoy_energy_average: float
+        Average of the decoy energy distribution
+    decoy_energy_std: float
+        Standard deviation of the decoy energy distribution
+    """
+   
+    native_energy = compute_fragment_total_native_energy(seq,
+                                                         potts_model,
+                                                         mask,
+                                                         fragment_pos,
+                                                         fragment_in_context)
+    decoy_seqs = make_decoy_seqs(seq,ndecoys=ndecoys)
+
+    decoy_energies = compute_fragment_total_decoy_energy(decoy_seqs,
+                                                        potts_model,
+                                                        mask,
+                                                        fragment_pos,
+                                                        fragment_in_context,
+                                                        config_decoys = config_decoys,
+                                                        msa_mask = msa_mask)
+    decoy_energy_average = decoy_energies.mean()
+    decoy_energy_std = decoy_energies.std()
+
+    total_frustration = (native_energy - decoy_energy_average)/ decoy_energy_std
+    if output_kind == 'frustration':
+    
+        return total_frustration
+    else:
+        return native_energy, decoy_energy_average, decoy_energy_std
+
+
+
+def compute_native_h_J(seq: str,
+                       potts_model: dict,
+                       mask: np.array) -> tuple:
+
+    """
+    Computes the applied fields h_i(a_i) and J_{ij}(a_i,a_j) for the residues a_i of the sequence  
+    
+          
+    Parameters
+    ----------
+    seq : str
+        The amino acid sequence of the protein. The sequence is assumed to be in one-letter code. Gaps are represented as '-'. The length of the sequence (L) should match the dimensions of the Potts model.
+    potts_model : dict
+        A dictionary containing the Potts model parameters 'h' (fields) and 'J' (couplings). The fields are a 2D array of shape (L, 20), where L is the length of the sequence and 20 is the number of amino acids. The couplings are a 4D array of shape (L, L, 20, 20). The fields and couplings are assumed to be in units of energy.
+    mask : np.array
+        A 2D Boolean array that determines which residue pairs should be considered in the energy computation. The mask should have dimensions (L, L), where L is the length of the sequence.
+    
+    Returns
+    -------
+    h: np.array
+        Values of the local field for the sequence.
+    j: np.array
+        Values of the coupling field for the sequence. 
+    """
+    
+    seq_index = np.array([_AA.find(aa) for aa in seq])
+    seq_len = len(seq_index)
+
+    pos1, pos2 = np.meshgrid(np.arange(seq_len), np.arange(seq_len), indexing='ij', sparse=True)
+    aa1, aa2 = np.meshgrid(seq_index, seq_index, indexing='ij', sparse=True)
+    if len(potts_model['J'].shape)==4:
+      #  print('potts')
+        h = -potts_model['h'][range(seq_len), seq_index]
+        j = -potts_model['J'][pos1, pos2, aa1, aa2]
+    else:
+        #MJ 
+       # print('MJ')
+        h = 0
+        j = -potts_model['J'][aa1, aa2]
+    return h, j
+
+
+def compute_decoy_h_J(decoy_seqs: list,
+                      potts_model: dict,
+                      mask: np.array,
+                      config_decoys: bool = False) -> tuple:
+    """
+    Computes the applied fields h_i(a_i) and J_{ij}(a_i,a_j) for the residues a_i of a set of decoy sequences 
+    
+          
+    Parameters
+    ----------
+    decoy_seqs : list
+        List of decoy sequences. The sequences are assumed to be in one-letter code. Gaps are represented as '-'. The length of the sequences (L) should match the dimensions of the Potts model.
+    potts_model : dict
+        A dictionary containing the Potts model parameters 'h' (fields) and 'J' (couplings). The fields are a 2D array of shape (L, 20), where L is the length of the sequence and 20 is the number of amino acids. The couplings are a 4D array of shape (L, L, 20, 20). The fields and couplings are assumed to be in units of energy.
+    mask : np.array
+        A 2D Boolean array that determines which residue pairs should be considered in the energy computation. The mask should have dimensions (L, L), where L is the length of the sequence.
+    config_decoys: bool
+        If True, use the configurational decoys approximation, shuffling index positions for configurational decoys energy calculation. If False, mutational decoys.
+    
+    Returns
+    -------
+    h: np.array
+        Values of the local field for each decoy sequence.
+    j: np.array
+        Values of the coupling field for each decoy sequence. 
+    """
+    
+    seq_index = np.array([[_AA.find(aa) for aa in seq] for seq in decoy_seqs])
+    N_seqs, seq_len = seq_index.shape
+    pos_index=np.repeat([np.arange(seq_len)], N_seqs,axis=0)
+    
+    if config_decoys:
+        
+        pos_index=np.array([np.random.choice(pos_index[0],
+                                             size=len(pos_index[0]),
+                                             replace=False) for x in range(pos_index.shape[0])])
+        mask=np.ones(mask.shape)*mask.mean()
+
+       
+    pos1=np.array([np.meshgrid(p, p, indexing='ij', sparse=True)[0] for p in pos_index])
+    pos2=np.array([np.meshgrid(p, p, indexing='ij', sparse=True)[1] for p in pos_index])
+    aa1=np.array([np.meshgrid(s, s, indexing='ij', sparse=True)[0] for s in seq_index])
+    aa2=np.array([np.meshgrid(s, s, indexing='ij', sparse=True)[1] for s in seq_index])
+    if len(potts_model['J'].shape)==4:
+        h = -potts_model['h'][pos_index,seq_index]
+        j = -potts_model['J'][pos1, pos2, aa1, aa2]
+    else:
+        #MJ 
+        h = 0
+        j = -potts_model['J'][aa1, aa2]
+    return h,j
+
+
+def compute_native_fragment_energy_from_h_j(fragment_pos: np.array,
+                                            h: np.array,
+                                            j: np.array,
+                                            mask: np.array)-> float:
+    """
+    Computes the energy from the applied fields h_i(a_i) and J_{ij}(a_i,a_j) 
+          
+    Parameters
+    ----------
+    fragment_pos: np:array
+        Array of sequence positions selected.
+    h: np.array
+        Values of the local field for each decoy sequence.
+    j: np.array
+        Values of the coupling field for each decoy sequence. 
+    mask : np.array
+        A 2D Boolean array that determines which residue pairs should be considered in the energy computation. The mask should have dimensions (L, L), where L is the length of the sequence.
+     
+    Returns
+    -------
+    energy: float
+        Native energy of the protein 
+        
+    """
+    h_mask=np.zeros(len(h),dtype=int)    
+    h_mask[fragment_pos]=1
+    j_mask=compute_fragment_mask(mask,fragment_pos)
+    h_prime= h*h_mask
+    j_prime = j * j_mask
+
+    energy = h_prime.sum() + j_prime.sum() / 2
+    return energy
+
+def compute_decoy_fragment_energy_from_h_j(fragment_pos: np.array,
+                                            h: np.array,
+                                            j: np.array,
+                                            mask: np.array)-> tuple:
+    """
+    Computes the energy from the applied fields h_i(a_i) and J_{ij}(a_i,a_j) for each decoy sequence.
+          
+    Parameters
+    ----------
+    fragment_pos: np:array
+        Array of sequence positions selected.
+    h: np.array
+        Values of the local field for each decoy sequence.
+    j: np.array
+        Values of the coupling field for each decoy sequence. 
+    mask : np.array
+        A 2D Boolean array that determines which residue pairs should be considered in the energy computation. The mask should have dimensions (L, L), where L is the length of the sequence.
+     
+    Returns
+    -------
+    energy_average: float
+        Average of the decoy energies
+    energy_std: float
+        Standard deviation of the decoy energies
+        
+    """
+    h_mask=np.zeros(h.shape[1],dtype=int)    
+    h_mask[fragment_pos]=1
+    j_mask=compute_fragment_mask(mask,fragment_pos)
+    h_prime= h*h_mask
+    j_prime = j * j_mask  
+    energy = h_prime.sum(axis=-1) + j_prime.sum(axis=-1).sum(axis=-1) / 2
+    
+    energy_average = energy.mean()
+    energy_std = energy.std() 
+    
+    return energy_average, energy_std 
+
+
+def compute_energy_sliding_window(seq: str,
+                                  potts_model: dict,
+                                  mask: np.array,
+                                  win_size: int,
+                                  ndecoys: int,
+                                  config_decoys: bool) -> dict:
+    
+    """
+    Computes the total frustration, the native energy, the decoy average energy and the decoy standard deviation for fragments on a sliding window
+    
+    Parameters
+    ----------
+    seq : str
+        The amino acid sequence of the protein. The sequence is assumed to be in one-letter code. Gaps are represented as '-'. The length of the sequence (L) should match the dimensions of the Potts model.
+    potts_model : dict
+        A dictionary containing the Potts model parameters 'h' (fields) and 'J' (couplings). The fields are a 2D array of shape (L, 20), where L is the length of the sequence and 20 is the number of amino acids. The couplings are a 4D array of shape (L, L, 20, 20). The fields and couplings are assumed to be in units of energy.
+    mask : np.array
+        A 2D Boolean array that determines which residue pairs should be considered in the energy computation. The mask should have dimensions (L, L), where L is the length of the sequence.
+    win_size: int
+        Size of the sliding window
+    ndecoys: int
+        Number of decoy sequences to use
+    config_decoys: bool
+        If True, use the configurational decoys approximation, shuffling index positions for configurational decoys energy calculation. If False, mutational decoys.
+
+    Returns
+    -------
+    results: dict
+        Dictionary with the results, containing
+        'fragment_center': center position of each window 
+        'win_size': size of the sliding windows
+        'native_energy': native energy for each window
+        'decoy_energy_av': decoy energy average for each window
+        'decoy_energy_std': decoy energy standard deviation for each window
+        'frustration': total frustration index for each window
+        
+    """
+    h, j = compute_native_h_J(seq, potts_model, mask)
+    
+    decoy_seqs = make_decoy_seqs(seq, ndecoys=ndecoys)    
+    h_decoys,j_decoys = compute_decoy_h_J(decoy_seqs, potts_model, mask, config_decoys)
+
+    dif = (win_size - 1) // 2
+    positions = np.arange(dif, len(seq) - dif)
+
+    e_native, e_decoy_av, e_decoy_std, frustration_sw = [], [], [], []
+
+    for i in positions:
+        fragment_pos = np.arange(i - dif, i + dif + 1)  
+
+        native_energy = compute_native_fragment_energy_from_h_j(fragment_pos,h,j,mask)
+        
+        decoy_avg, decoy_std = compute_decoy_fragment_energy_from_h_j(fragment_pos,
+                                                                      h_decoys,
+                                                                      j_decoys,
+                                                                      mask) 
+        
+        frustration_score = (native_energy - decoy_avg) / decoy_std if decoy_std != 0 else 0
+
+        e_native.append(native_energy)
+        e_decoy_av.append(decoy_avg)
+        e_decoy_std.append(decoy_std)
+        frustration_sw.append(frustration_score)
+        
+    results = {
+        'fragment_center': positions,
+        'win_size': [win_size] * len(positions),
+        'native_energy': e_native,
+        'decoy_energy_av': e_decoy_av,
+        'decoy_energy_std': e_decoy_std,
+        'frustration': frustration_sw
+    }
+
+    return results
