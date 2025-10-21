@@ -1,0 +1,137 @@
+name: CI
+# copied workflow CI#3 from cabb99/Frustratometer
+on:
+  # GitHub has started calling new repo's first branch "main" https://github.com/github/renaming
+  # Existing codes likely still have "master" as the primary branch
+  # Both are tracked here to keep legacy and new codes working
+  push:
+    branches:
+      - "main"
+  pull_request:
+    branches:
+      - "main"
+  # schedule:
+    # Nightly tests run on master by default:
+    #   Scheduled workflows run on the latest commit on the default or base branch.
+    #   (from https://help.github.com/en/actions/reference/events-that-trigger-workflows#scheduled-events-schedule)
+    # - cron: "0 0 * * *"
+
+jobs:
+  test:
+    name: Test on ${{ matrix.os }}, Python ${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      max-parallel: 1
+      matrix:
+        #os: [macOS-latest, ubuntu-latest, windows-latest]
+        #python-version: [3.8, 3.9, "3.10"]
+        os: [ubuntu-latest]
+        python-version: [3.8, 3.9, "3.10"]
+    steps:
+    - uses: actions/checkout@v1
+
+    - name: Additional info about the build
+      shell: bash
+      run: |
+        uname -a
+        df -h
+        ulimit -a
+    - name: Install hmmer
+      run: |
+       wget http://eddylab.org/software/hmmer/hmmer-3.3.2.tar.gz
+       tar zxf hmmer-3.3.2.tar.gz
+       cd hmmer-3.3.2
+       ./configure
+       make
+       make check
+       sudo make install
+       cd ..  
+    - name: checkout source
+      uses: actions/checkout@v2
+#      with:
+#        path: main
+    
+    # - name: Generate lfs file list
+    #   run: git lfs ls-files -l | cut -d' ' -f1 | sort > .lfs-assets-id
+    
+    # - name: Restore lfs cache
+    #   uses: actions/cache@v2
+    #   id: lfs-cache
+    #   with:
+    #     path: .git/lfs
+    #     key: ${{ runner.os }}-lfs-${{ hashFiles('.lfs-assets-id') }}-v1
+    
+    # - name: Pull lfs files
+    #   run: git lfs pull
+    
+    
+#    - name: Change to main directory
+#      run: |
+#        cd main
+#        pwd
+
+    # More info on options: https://github.com/conda-incubator/setup-miniconda
+    - uses: conda-incubator/setup-miniconda@v2
+      with:
+        python-version: ${{ matrix.python-version }}
+        environment-file: devtools/conda-envs/test_env.yaml
+
+        channels: conda-forge, defaults, bioconda
+
+        activate-environment: test
+        auto-update-conda: false
+        auto-activate-base: false
+        show-channel-urls: true
+
+#    - name: Change to root directory
+#      run: |
+#        cd main
+#        pwd
+    
+    #Install numpy first
+    - name: Install numpy
+      run: conda install numpy
+
+    #Install pydca
+    - name: Check out pydca
+      uses: actions/checkout@v3
+      with:
+        repository: cabb99/pydca
+        path: pydca_dir
+    - name: Install pydca
+      run: |
+        cd pydca_dir
+        pip install -r requirements.txt
+        python -m pip install . --no-deps
+        conda list
+        cd ..
+        pwd
+    
+    - name: Install package
+
+      # conda setup requires this special shell
+      shell: bash -l {0}
+      run: |
+        conda install -c conda-forge --file requirements.txt
+        python -m pip install . --no-deps
+        conda list
+    - name: Install pdbfixer
+
+      # conda setup requires this special shell
+      shell: bash -l {0}
+      run: |
+        conda install -c conda-forge pdbfixer
+    - name: Run tests
+
+      # conda setup requires this special shell
+      shell: bash -l {0}
+
+      run: |
+        pytest -v --cov=frustratometer --cov-report=xml --color=yes tests/
+    - name: CodeCov
+      uses: codecov/codecov-action@v3
+      with:
+        token: ${{ secrets.CODECOV_TOKEN }}
+        file: ./coverage.xml
+        flags: unittests
+        name: codecov-${{ matrix.os }}-py${{ matrix.python-version }}
